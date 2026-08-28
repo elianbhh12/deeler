@@ -15,7 +15,7 @@ from .config import (
     ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA,
     ESTADO_LISTO, ESTADO_ERROR, ESTADO_INCOMPLETO, ESTADO_SIN_METADATA,
     ESTADO_ICON, ESTADO_TEXTO, VALIDATION_KEYS, KAFKA_TOPIC_REQUERIDO,
-    MI_WARNING,
+    AID_TYPE_VALIDOS, MI_WARNING,
 )
 from .utils import obtener_usuario_actual
 
@@ -405,20 +405,21 @@ def analizar_hu(hu_folder: Path) -> dict:
         "detalle": f"{ICON_OK} tecnologia='AID'" if aid_tec_ok else f"{ICON_ERROR} tecnologia inválida: {aid_tecnologia or 'VACÍO'}"
     }
 
-    # AID: TYPE debe ser "topic" (todas las ocurrencias, un AID puede tener varios steps)
+    # AID: TYPE debe ser "topic" en cada step, salvo excepciones conocidas
+    # (ej. un step final que solo escribe/guarda resultados) — ver AID_TYPE_VALIDOS.
     aid_type_vals = []
     if aid:
         buscar_clave_todos(aid, "TYPE", aid_type_vals)
     aid_type = aid_type_vals[0] if aid_type_vals else ""
 
     aid_type_na = not bool(aid)
-    aid_type_ok = all(str(t).strip().lower() == "topic" for t in aid_type_vals) if aid_type_vals else (not es_despliegue)
+    aid_type_ok = all(str(t).strip().lower() in AID_TYPE_VALIDOS for t in aid_type_vals) if aid_type_vals else (not es_despliegue)
     resultado["validaciones"]["aid_type_topic"] = {
         "ok": aid_type_ok,
         "na": aid_type_na and not es_despliegue,
         "type": aid_type,
         "types": aid_type_vals,
-        "detalle": f"{ICON_OK} TYPE='topic'" if aid_type_ok else f"{ICON_ERROR} TYPE inválido: {', '.join(str(t) for t in aid_type_vals) if aid_type_vals else 'VACÍO'}"
+        "detalle": f"{ICON_OK} TYPE válido" if aid_type_ok else f"{ICON_ERROR} TYPE inválido: {', '.join(str(t) for t in aid_type_vals) if aid_type_vals else 'VACÍO'}"
     }
 
     # Ambiente consistente entre AID (workflow_name) y UDZ (id)

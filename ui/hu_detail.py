@@ -16,7 +16,7 @@ import streamlit as st
 
 from core.config import (
     ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, ESTADO_ICON, ESTADO_LISTO,
-    KAFKA_TOPIC_REQUERIDO, ROOT_FOLDER, VALIDATION_KEYS,
+    KAFKA_TOPIC_REQUERIDO, ROOT_FOLDER, VALIDATION_KEYS, AID_TYPE_VALIDOS,
     MI_APPROVE, MI_ERROR, MI_FILE, MI_GUIDE, MI_INFO, MI_OK, MI_REFRESH, MI_WARNING,
 )
 from core.analysis import get_estado_code, cargar_json, clasificar_udz_desde_json, normalizar_s3, _val_ok, analizar_hu
@@ -418,17 +418,19 @@ def render_hu_detail(resultados, sprint_activo):
 
             aid_type_vals = aid_type_info.get("types", [])
             aid_type_val  = aid_type_info.get("type", "")
+            _aid_type_validos_txt = " / ".join(sorted(AID_TYPE_VALIDOS))
             def _aid_type_detail():
                 st.markdown("**TYPE(s) encontrado(s) en AID:**")
                 st.code("\n".join(str(t) for t in aid_type_vals) if aid_type_vals else "(vacío)", language="text")
-                st.markdown("**Regla:** Cada step de workflow debe usar `TYPE: \"topic\"` para eventos")
+                st.markdown(f"**Regla:** Cada step de workflow debe usar `TYPE` en {{{_aid_type_validos_txt}}} — `topic` para steps que publican evento, `write_results` para un step final que solo escribe/guarda resultados")
                 if not aid_type_vals:
                     st.error(f"{ICON_ERROR} **TYPE no encontrado en steps**")
                     st.info('**Agregar en AID steps** → en cada STEP_VARIABLES o step root:\n```json\n"TYPE": "topic"\n```')
                 else:
-                    st.error(f"{ICON_ERROR} **TYPE inválido en {sum(1 for t in aid_type_vals if str(t).strip().lower() != 'topic')} de {len(aid_type_vals)} step(s)**")
-            val_card(aid_type_ok, "TYPE = topic", _f_aid,
-                     "Cada step de orquestación debe usar TYPE='topic'", _aid_type_detail,
+                    _invalidos = sum(1 for t in aid_type_vals if str(t).strip().lower() not in AID_TYPE_VALIDOS)
+                    st.error(f"{ICON_ERROR} **TYPE inválido en {_invalidos} de {len(aid_type_vals)} step(s)**")
+            val_card(aid_type_ok, f"TYPE ∈ {{{_aid_type_validos_txt}}}", _f_aid,
+                     f"Cada step de orquestación debe usar TYPE en {{{_aid_type_validos_txt}}}", _aid_type_detail,
                      na=aid_type_na, campo="AID...TYPE", valor_ok=aid_type_val)
 
             ls_vals       = ls_info.get("valores", [])

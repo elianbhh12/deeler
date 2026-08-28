@@ -89,6 +89,12 @@ DEALER_NAME    = os.getenv("DEALER_NAME", "Dealer")
 
 KAFKA_TOPIC_REQUERIDO = "documentreceivingmanagement.documentuploadedv1"
 
+# AID: valores válidos para TYPE en cada step de workflow_definition.
+# "topic" es el caso normal (el step publica un evento). "write_results" es
+# la excepción confirmada para un step final que solo escribe/guarda
+# resultados y no publica evento — si aparece otro caso legítimo, agregarlo acá.
+AID_TYPE_VALIDOS = {"topic", "write_results"}
+
 # Sprint actual desde .env
 _sprint_default_num = ""
 if ITERATION_PATH:

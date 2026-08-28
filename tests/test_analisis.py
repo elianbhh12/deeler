@@ -55,8 +55,28 @@ def test_get_estado_code_infiere_de_estado_general_si_falta(appmod):
 
 #  analizar_hu sobre las HU de ejemplo (Backlog_Dealer/)
 
-def test_analizar_hu_despliegue_correcto_queda_listo(appmod, fixtures_dir):
-    r = appmod.analizar_hu(fixtures_dir / "1001-Despliegue Nuevo Caso PIA")
+def test_analizar_hu_despliegue_correcto_queda_listo(appmod, tmp_path):
+    # Se arma la HU con archivos propios (no la carpeta compartida de
+    # Backlog_Dealer/) porque esa es de uso manual y cualquiera puede
+    # reemplazar sus JSON para probar casos reales — no debe ser un fixture
+    # fijo del que dependa la suite de tests.
+    ta = {
+        "cu_name": "caso_ok", "type": "prompts",
+        "kafka_output_topic": appmod.KAFKA_TOPIC_REQUERIDO,
+    }
+    aid = {
+        "workflow_name": "aid-pdn-ok", "s3_path": "s3://bucket-pdn-ok/resultados",
+        "use_case": "caso_ok", "TYPE": "topic",
+        "workflow_variables": {"tecnologia": "AID"},
+        "workflow_definition": [{"STEP_NAME": "step1", "TYPE": "topic", "LAST_STEP": "False"}],
+    }
+    udz = {"item": {
+        "id": "aid-pdn-ok", "s3_path": "s3://bucket-pdn-ok/resultados",
+        "require_transmission": "true", "emit_event": "false",
+    }}
+    hu_folder = _escribir_hu_minima(tmp_path, ta, aid, udz, "DESPLIEGUE")
+
+    r = appmod.analizar_hu(hu_folder)
     assert r["estado_code"] == appmod.ESTADO_LISTO
 
 
@@ -175,4 +195,34 @@ def test_aid_type_detecta_mismatch_en_step_no_primero(appmod, tmp_path):
     assert len(r["validaciones"]["aid_type_topic"]["types"]) == 2
     assert r["validaciones"]["aid_type_topic"]["ok"] is False, (
         "si CUALQUIER step tiene TYPE distinto de 'topic', la validación debe fallar"
+    )
+
+
+def test_aid_type_write_results_es_una_excepcion_valida(appmod, tmp_path):
+    """Regresión de un caso real: un step final que solo escribe/guarda resultados
+    (no publica evento) usa TYPE='write_results' en vez de 'topic', y eso es válido
+    — no debe hacer fallar la validación (ver core.config.AID_TYPE_VALIDOS)."""
+    ta = {
+        "cu_name": "caso_writer", "type": "prompts",
+        "kafka_output_topic": appmod.KAFKA_TOPIC_REQUERIDO,
+    }
+    aid = {
+        "workflow_name": "aid-pdn-writer", "s3_path": "s3://bucket-pdn-writer/resultados",
+        "use_case": "caso_writer",
+        "workflow_variables": {"tecnologia": "AID"},
+        "workflow_definition": [
+            {"STEP_NAME": "extract", "TYPE": "topic", "LAST_STEP": "False"},
+            {"STEP_NAME": "store_results", "TYPE": "write_results", "LAST_STEP": "False"},
+        ],
+    }
+    udz = {"item": {
+        "id": "aid-pdn-writer", "s3_path": "s3://bucket-pdn-writer/resultados",
+        "require_transmission": "true", "emit_event": "false",
+    }}
+    hu_folder = _escribir_hu_minima(tmp_path, ta, aid, udz, "DESPLIEGUE")
+
+    r = appmod.analizar_hu(hu_folder)
+
+    assert r["validaciones"]["aid_type_topic"]["ok"] is True, (
+        "TYPE='write_results' en un step final es una excepción válida, no debe marcar error"
     )
