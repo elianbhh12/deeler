@@ -1,10 +1,10 @@
 """Orquesta el render de la app en el mismo orden que tenía el script original:
 estilos -> header -> stepper -> Paso 1/2 -> KPIs/progreso -> Excel + tabla ->
-detalle de HU seleccionada.
+detalle de HU seleccionada -> consola "Subir a AWS".
 """
 import streamlit as st
 
-from ui import styles, header, ingest, dashboard, backlog, hu_detail
+from ui import styles, header, ingest, dashboard, backlog, hu_detail, aws_console
 from core.utils import get_sprints
 
 
@@ -27,3 +27,4 @@ def run_app():
     backlog.render_tabla_resumen(resultados)
 
     hu_detail.render_hu_detail(resultados, sprint_activo)
+    aws_console.render_aws_console(resultados)

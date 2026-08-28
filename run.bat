@@ -8,8 +8,12 @@ if not exist ".venv\Scripts\python.exe" (
     echo Creandolo ahora...
     python -m venv .venv
     ".venv\Scripts\python.exe" -m pip install --upgrade pip
-    ".venv\Scripts\python.exe" -m pip install -r requirements.txt
 )
+
+REM Siempre sincroniza dependencias (rapido/no-op si ya estan instaladas) -
+REM asi un .venv viejo levanta paquetes nuevos agregados a requirements.txt
+REM (ej. boto3 para "Subir a AWS") sin tener que borrar y recrear el venv.
+".venv\Scripts\python.exe" -m pip install -q -r requirements.txt
 
 ".venv\Scripts\python.exe" -m streamlit run app.py
 pause

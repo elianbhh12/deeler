@@ -102,7 +102,21 @@ def render_tabla_resumen(resultados):
     if tabla_data:
         df_tabla = pd.DataFrame(tabla_data)
         df_tabla["ID"] = df_tabla["ID"].astype(str).str.replace(",", "", regex=False)
-        st.dataframe(df_tabla, width='stretch', hide_index=True)
+
+        def _color_celda(val):
+            texto = str(val)
+            if ICON_OK in texto:
+                return "background-color:#D1FAE5;color:#065F46"
+            if ICON_ERROR in texto:
+                return "background-color:#FEE2E2;color:#991B1B"
+            if ICON_WARNING in texto:
+                return "background-color:#FEF3C7;color:#92400E"
+            if ICON_NA in texto:
+                return "background-color:#F5F5F4;color:#78716C"
+            return ""
+
+        _estilo = df_tabla.style.map(_color_celda, subset=["RNF", "TA", "AID", "UDZ", "Estado"])
+        st.dataframe(_estilo, width='stretch', hide_index=True)
 
         #  Alertas de RNF faltante
         sin_rnf = [r.get('hu_id') for r in filtered_resultados if not r.get('rnf_path')]

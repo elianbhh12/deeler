@@ -15,7 +15,7 @@ from datetime import datetime
 import streamlit as st
 
 from core.config import (
-    ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, ESTADO_ICON, ESTADO_LISTO,
+    ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, ESTADO_ICON, ESTADO_LISTO, ESTADO_ERROR,
     KAFKA_TOPIC_REQUERIDO, ROOT_FOLDER, VALIDATION_KEYS, AID_TYPE_VALIDOS,
     MI_APPROVE, MI_ERROR, MI_FILE, MI_GUIDE, MI_INFO, MI_OK, MI_REFRESH, MI_WARNING,
 )
@@ -46,7 +46,8 @@ def render_hu_detail(resultados, sprint_activo):
 
     def _hu_label(r):
         _id    = r.get('hu_id', '?')
-        _title = r.get('hu_title', '')[:30]
+        _title = r.get('hu_title', '')  # sin recortar: así la búsqueda del selectbox
+                                          # encuentra cualquier palabra del título completo
         _tipo  = r.get('tipo_cambio', '')[:4]  # DESP / MODI
         _icon  = ESTADO_ICON.get(get_estado_code(r), ICON_WARNING)
         return f"{_icon} {_id} — {_title} [{_tipo}]"
@@ -61,6 +62,10 @@ def render_hu_detail(resultados, sprint_activo):
     if seleccion:
         r   = hu_options[seleccion]
         val = r.get("validaciones", {})
+        #  La HU activa se guarda acá para que la consola de "Subir a AWS QA"
+        #  (sección aparte, más abajo en la página) sepa a cuál referirse sin
+        #  duplicar el selector.
+        st.session_state["hu_activa_id"] = r.get("hu_id")
 
         # Obtener hu_folder para el botn de abrir carpeta
         sprint_path = Path(ROOT_FOLDER) / sprint_activo
@@ -75,7 +80,88 @@ def render_hu_detail(resultados, sprint_activo):
                     hu_folder = d
                     break
 
-        #  Header de HU seleccionada 
+        #  Selector de TA/AID/UDZ cuando hay varios en adjuntos
+        _ta_files  = r.get("ta_files", [])
+        _aid_files = r.get("aid_files", [])
+        _udz_files = r.get("udz_files", [])
+        if hu_folder and (len(_ta_files) > 1 or len(_aid_files) > 1 or len(_udz_files) > 1):
+            st.markdown(
+                f"<div class='step-card-help'>{ICON_WARNING} Esta HU trae varios archivos TA, AID y/o UDZ en adjuntos — elegí cuál usar para el análisis</div>",
+                unsafe_allow_html=True,
+            )
+            #  Icono coloreado según el resultado que da la combinación TA/AID/UDZ
+            #  activa hoy: verde = LISTO, rojo = con errores, naranja = incompleto.
+            #  Así el usuario ve de un vistazo si lo que eligió quedó bien o mal,
+            #  sin tener que bajar a leer las tarjetas de validación.
+            _estado_code_sel = get_estado_code(r)
+            if _estado_code_sel == ESTADO_LISTO:
+                _sel_icon, _sel_color = ICON_OK, "#15803D"
+            elif _estado_code_sel == ESTADO_ERROR:
+                _sel_icon, _sel_color = ICON_ERROR, "#B91C1C"
+            else:
+                _sel_icon, _sel_color = ICON_WARNING, "#B45309"
+
+            def _label_coloreado(texto):
+                st.markdown(
+                    f"<div style='font-size:13px;font-weight:600;color:{_sel_color};margin-bottom:2px'>{_sel_icon} {texto}</div>",
+                    unsafe_allow_html=True,
+                )
+
+            col_pick_ta, col_pick_aid, col_pick_udz = st.columns(3)
+            _ta_override = None
+            _aid_override = None
+            _udz_override = None
+            if len(_ta_files) > 1:
+                with col_pick_ta:
+                    _label_coloreado("TA a usar")
+                    _ta_names = [Path(p).name for p in _ta_files]
+                    _ta_activo_name = Path(r.get("ta_activo") or _ta_files[0]).name
+                    _ta_sel = st.selectbox(
+                        "TA a usar", _ta_names,
+                        index=_ta_names.index(_ta_activo_name) if _ta_activo_name in _ta_names else 0,
+                        key=f"ta_pick_{hu_id_str}",
+                        label_visibility="collapsed",
+                    )
+                    _ta_override = Path([p for p in _ta_files if Path(p).name == _ta_sel][0])
+            if len(_aid_files) > 1:
+                with col_pick_aid:
+                    _label_coloreado("AID a usar")
+                    _aid_names = [Path(p).name for p in _aid_files]
+                    _aid_activo_name = Path(r.get("aid_activo") or _aid_files[0]).name
+                    _aid_sel = st.selectbox(
+                        "AID a usar", _aid_names,
+                        index=_aid_names.index(_aid_activo_name) if _aid_activo_name in _aid_names else 0,
+                        key=f"aid_pick_{hu_id_str}",
+                        label_visibility="collapsed",
+                    )
+                    _aid_override = Path([p for p in _aid_files if Path(p).name == _aid_sel][0])
+            if len(_udz_files) > 1:
+                with col_pick_udz:
+                    _label_coloreado("UDZ a usar")
+                    _udz_names = [Path(p).name for p in _udz_files]
+                    _udz_activo_name = Path(r.get("udz_activo") or _udz_files[0]).name
+                    _udz_sel = st.selectbox(
+                        "UDZ a usar", _udz_names,
+                        index=_udz_names.index(_udz_activo_name) if _udz_activo_name in _udz_names else 0,
+                        key=f"udz_pick_{hu_id_str}",
+                        label_visibility="collapsed",
+                    )
+                    _udz_override = Path([p for p in _udz_files if Path(p).name == _udz_sel][0])
+
+            _ta_cambio = _ta_override and Path(r.get("ta_activo") or "") != _ta_override
+            _aid_cambio = _aid_override and Path(r.get("aid_activo") or "") != _aid_override
+            _udz_cambio = _udz_override and Path(r.get("udz_activo") or "") != _udz_override
+            if _ta_cambio or _aid_cambio or _udz_cambio:
+                nuevo = analizar_hu(hu_folder, ta_override=_ta_override, aid_override=_aid_override, udz_override=_udz_override)
+                _res = st.session_state.get("resultados", [])
+                for _i, _x in enumerate(_res):
+                    if str(_x.get("hu_id")) == hu_id_str:
+                        _res[_i] = nuevo
+                        break
+                st.session_state["resultados"] = _res
+                st.rerun()
+
+        #  Header de HU seleccionada
         arcs_h = r.get("archivos", {})
         amb_h  = r.get("validaciones", {}).get("ambiente", {}).get("ambiente", "?")
         tipo_h = r.get("tipo_cambio", "?")
@@ -137,16 +223,33 @@ def render_hu_detail(resultados, sprint_activo):
             )
 
         if _aprobacion_vigente:
-            st.success(f"Aprobado para PDN por {_aprobado_por} — {_aprobado_en_fmt}", icon=MI_APPROVE)
+            _qa_por = r.get("probado_qa_por")
+            _qa_en_fmt = r.get("probado_qa_en", "")[:16].replace("T", " ")
+            _qa_txt = f" · Probado en QA por {_qa_por} — {_qa_en_fmt}" if _qa_por else ""
+            st.success(f"Aprobado para PDN por {_aprobado_por} — {_aprobado_en_fmt}{_qa_txt}", icon=MI_APPROVE)
         else:
             _puede_aprobar = _estado_code_hoy == ESTADO_LISTO
+            _qa_confirmado = False
+            if _puede_aprobar:
+                # Checklist obligatorio: nunca se aprueba para PDN sin confirmar
+                # antes que se probó en QA — se pide de nuevo en cada sesión,
+                # a propósito (no se recuerda marcado de una aprobación anterior).
+                _qa_confirmado = st.checkbox(
+                    "Confirmo que esta HU se probó en QA antes de subir a PDN",
+                    key=f"qa_check_{r.get('hu_id')}",
+                )
             if st.button("Marcar como aprobado para PDN", key=f"aprobar_{r.get('hu_id')}", width='stretch',
-                         icon=MI_APPROVE, disabled=not _puede_aprobar,
-                         help="Solo se puede aprobar si el estado actual es LISTO" if not _puede_aprobar else None):
+                         icon=MI_APPROVE, disabled=not (_puede_aprobar and _qa_confirmado),
+                         help=("Solo se puede aprobar si el estado actual es LISTO" if not _puede_aprobar
+                               else "Marcá primero el checklist de QA" if not _qa_confirmado else None)):
                 if hu_folder:
-                    r["aprobado_por"] = obtener_usuario_actual()
-                    r["aprobado_en"] = datetime.now().isoformat()
+                    _ahora = datetime.now().isoformat()
+                    _usuario = obtener_usuario_actual()
+                    r["aprobado_por"] = _usuario
+                    r["aprobado_en"] = _ahora
                     r["aprobado_estado_code"] = _estado_code_hoy
+                    r["probado_qa_por"] = _usuario
+                    r["probado_qa_en"] = _ahora
                     out_path = hu_folder / "analisis" / "analisis_tecnico.json"
                     out_path.write_text(json.dumps(r, indent=2, ensure_ascii=False), encoding="utf-8")
                     _res = st.session_state.get("resultados", [])

@@ -171,7 +171,7 @@ def clasificar_udz_desde_json(udz_data: dict) -> str:
 
 def buscar_archivos(hu_folder: Path):
     adj = hu_folder / "adjuntos"
-    res = {"ta": None, "aid": None, "udz": None, "udz_files": [], "configs_sin_tipo": []}
+    res = {"ta": None, "aid": None, "udz": None, "ta_files": [], "aid_files": [], "udz_files": [], "configs_sin_tipo": []}
     if not adj.exists():
         return res
     for f in adj.iterdir():
@@ -180,14 +180,18 @@ def buscar_archivos(hu_folder: Path):
         stem = f.stem.lower()
 
         # 1. Detecta por nombre (más confiable)
-        if "aid" in stem and res["aid"] is None:
-            res["aid"] = f
+        if "aid" in stem:
+            if res["aid"] is None:
+                res["aid"] = f
+            res["aid_files"].append(f)
         elif "udz" in stem:
             if res["udz"] is None:
                 res["udz"] = f
             res["udz_files"].append(f)
-        elif "ta" in stem and res["ta"] is None:
-            res["ta"] = f
+        elif "ta" in stem:
+            if res["ta"] is None:
+                res["ta"] = f
+            res["ta_files"].append(f)
         else:
             # 2. Nombre genérico (config.json, etc.) — inferir por estructura
             try:
@@ -196,11 +200,15 @@ def buscar_archivos(hu_folder: Path):
             except Exception:
                 tipo = "desconocido"
 
-            if tipo == "AID" and res["aid"] is None:
-                res["aid"] = f  # asignar directamente
+            if tipo == "AID":
+                if res["aid"] is None:
+                    res["aid"] = f
+                res["aid_files"].append(f)
                 res["configs_sin_tipo"].append({"archivo": f, "tipo_inferido": tipo, "auto_asignado": True})
-            elif tipo == "TA" and res["ta"] is None:
-                res["ta"] = f
+            elif tipo == "TA":
+                if res["ta"] is None:
+                    res["ta"] = f
+                res["ta_files"].append(f)
                 res["configs_sin_tipo"].append({"archivo": f, "tipo_inferido": tipo, "auto_asignado": True})
             elif tipo == "UDZ":
                 if res["udz"] is None:
@@ -210,16 +218,18 @@ def buscar_archivos(hu_folder: Path):
             else:
                 res["configs_sin_tipo"].append({"archivo": f, "tipo_inferido": tipo, "auto_asignado": False})
 
-    # Unificar y deduplicar lista de UDZ detectados
-    if res["udz"] and res["udz"] not in res["udz_files"]:
-        res["udz_files"].append(res["udz"])
-    _seen = set()
-    _uniq = []
-    for p in res["udz_files"]:
-        if str(p) not in _seen:
-            _seen.add(str(p))
-            _uniq.append(p)
-    res["udz_files"] = _uniq
+    # Unificar y deduplicar listas de TA/AID/UDZ detectados
+    for clave in ("ta", "aid", "udz"):
+        lista = res[f"{clave}_files"]
+        if res[clave] and res[clave] not in lista:
+            lista.append(res[clave])
+        _seen = set()
+        _uniq = []
+        for p in lista:
+            if str(p) not in _seen:
+                _seen.add(str(p))
+                _uniq.append(p)
+        res[f"{clave}_files"] = _uniq
     return res
 
 
@@ -236,7 +246,10 @@ def buscar_rnf(hu_folder: Path):
     return None
 
 
-def analizar_hu(hu_folder: Path) -> dict:
+def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = None, udz_override: Path = None) -> dict:
+    """Analiza una HU. Si hay varios TA, AID o UDZ en adjuntos, por defecto se usa
+    el primero que se encontró — `ta_override`/`aid_override`/`udz_override` permiten
+    forzar cuál de los varios usar (para cuando el usuario elige uno específico en la UI)."""
     meta_path = hu_folder / "metadata.json"
     if not meta_path.exists():
         return {
@@ -256,6 +269,31 @@ def analizar_hu(hu_folder: Path) -> dict:
     hu_id  = meta.get("id", "?")
     title  = meta.get("title", "?")
     arcs   = buscar_archivos(hu_folder)
+
+    # Si no se pasó un override explícito para esta llamada (ej. "Actualizar" o
+    # "Re-analizar sprint"), se respeta la última elección de TA/UDZ guardada en
+    # disco — así el usuario no tiene que re-elegir cada vez que hay varios.
+    out_path = hu_folder / "analisis" / "analisis_tecnico.json"
+    _anterior = cargar_json(out_path) if out_path.exists() else None
+    if not ta_override and _anterior and _anterior.get("ta_activo"):
+        _prev_ta = Path(_anterior["ta_activo"])
+        if _prev_ta in arcs.get("ta_files", []):
+            ta_override = _prev_ta
+    if not aid_override and _anterior and _anterior.get("aid_activo"):
+        _prev_aid = Path(_anterior["aid_activo"])
+        if _prev_aid in arcs.get("aid_files", []):
+            aid_override = _prev_aid
+    if not udz_override and _anterior and _anterior.get("udz_activo"):
+        _prev_udz = Path(_anterior["udz_activo"])
+        if _prev_udz in arcs.get("udz_files", []):
+            udz_override = _prev_udz
+
+    if ta_override and ta_override in arcs.get("ta_files", []):
+        arcs["ta"] = ta_override
+    if aid_override and aid_override in arcs.get("aid_files", []):
+        arcs["aid"] = aid_override
+    if udz_override and udz_override in arcs.get("udz_files", []):
+        arcs["udz"] = udz_override
     rnf    = buscar_rnf(hu_folder)
     ta     = cargar_json(arcs["ta"])  if arcs["ta"]  else None
     aid    = cargar_json(arcs["aid"]) if arcs["aid"] else None
@@ -282,7 +320,12 @@ def analizar_hu(hu_folder: Path) -> dict:
             "UDZ": arcs["udz"].name if arcs["udz"] else f"{ICON_ERROR} NO EXISTE",
             "RNF": rnf.name if rnf else f"{ICON_WARNING} NO ENCONTRADO"
         },
+        "ta_files": [str(p) for p in arcs.get("ta_files", [])],
+        "aid_files": [str(p) for p in arcs.get("aid_files", [])],
         "udz_files": [str(p) for p in arcs.get("udz_files", [])],
+        "ta_activo": str(arcs["ta"]) if arcs["ta"] else None,
+        "aid_activo": str(arcs["aid"]) if arcs["aid"] else None,
+        "udz_activo": str(arcs["udz"]) if arcs["udz"] else None,
         "attachments": meta.get("attachments", []),
         "downloaded_at": meta.get("downloaded_at", ""),
         "estado_ado": meta.get("state", "New"),
@@ -615,19 +658,25 @@ def analizar_hu(hu_folder: Path) -> dict:
     resultado["analizado_por"] = obtener_usuario_actual()
     resultado["analizado_en"] = datetime.now().isoformat()
 
-    # La aprobación para PDN es un acto explícito del usuario (botón "Marcar
-    # como aprobado"), no algo que se recalcula solo. Si ya existía una en el
-    # análisis guardado previamente, se conserva al re-analizar.
-    out = hu_folder / "analisis" / "analisis_tecnico.json"
-    if out.exists():
-        anterior = cargar_json(out) or {}
-        for campo in ("aprobado_por", "aprobado_en", "aprobado_estado_code"):
-            if anterior.get(campo):
-                resultado[campo] = anterior[campo]
+    # La aprobación para PDN (y la confirmación de que se probó en QA) son actos
+    # explícitos del usuario, no algo que se recalcula solo. Si ya existían en el
+    # análisis guardado previamente, se conservan al re-analizar (ya se leyó
+    # arriba en _anterior, para no leer el archivo dos veces).
+    if _anterior:
+        campos_a_conservar = ["aprobado_por", "aprobado_en", "aprobado_estado_code",
+                               "probado_qa_por", "probado_qa_en"]
+        # Trazabilidad de subida a AWS: igual, es un acto explícito por
+        # componente (ta/aid/udz), se conserva al re-analizar.
+        for _tipo_aws in ("ta", "aid", "udz"):
+            campos_a_conservar += [f"{_tipo_aws}_aws_ambiente", f"{_tipo_aws}_aws_por",
+                                    f"{_tipo_aws}_aws_en", f"{_tipo_aws}_aws_tabla"]
+        for campo in campos_a_conservar:
+            if _anterior.get(campo):
+                resultado[campo] = _anterior[campo]
 
     # Guardar análisis
-    out.parent.mkdir(exist_ok=True)
-    out.write_text(json.dumps(resultado, indent=2, ensure_ascii=False), encoding="utf-8")
+    out_path.parent.mkdir(exist_ok=True)
+    out_path.write_text(json.dumps(resultado, indent=2, ensure_ascii=False), encoding="utf-8")
 
     return resultado
 

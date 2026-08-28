@@ -28,28 +28,32 @@ BANCO/
 │   ├── config.py                # Colores, íconos (ICON_*/MI_*), estados (ESTADO_*), variables de entorno
 │   ├── ado_client.py             # Todo lo que habla con Azure DevOps: ado_url(), descargar_hu()
 │   ├── analysis.py                # El motor: las 12 validaciones TA/AID/UDZ, analizar_hu/analizar_sprint
+│   ├── aws_upload.py               # Subida real de TA/AID/UDZ a DynamoDB QA/PDN (ver "Subida a AWS")
 │   ├── reports.py                  # Excel consolidado (generar_excel_consolidado) y métricas de ciclo
 │   ├── guide.py                     # Texto de la guía contextual paso a paso
 │   └── utils.py                      # safe_name, obtener_usuario_actual, get_sprints, abrir_carpeta/archivo
 ├── ui/                            # Interfaz Streamlit (un módulo por sección de pantalla)
 │   ├── __init__.py                  # run_app(): orquesta el orden exacto de renderizado
 │   ├── styles.py                     # CSS del design system (inject_css)
-│   ├── header.py                      # Header + stepper del pipeline (1→2→3)
+│   ├── header.py                      # Header + stepper del pipeline (1→2→3→4)
 │   ├── ingest.py                       # Paso 1 (traer HU) y Paso 2 (analizar sprint)
 │   ├── dashboard.py                     # Carga de resultados, KPIs y barra de progreso
 │   ├── backlog.py                        # Tarjeta del Excel consolidado + tabla resumen
-│   └── hu_detail.py                       # Selector de HU + las 12 validaciones + aprobación (el módulo más grande)
+│   ├── hu_detail.py                       # Selector de HU + las 12 validaciones + aprobación (el módulo más grande)
+│   └── aws_console.py                      # Paso 3 del pipeline: consola "Subir a AWS" (ver más abajo)
 ├── run.bat                # Arranca la app (doble clic)
 ├── run_tests.bat            # Corre los tests (doble clic)
 ├── requirements.txt
-├── .env                     # Credenciales reales — NO se comparte (falta crearlo la primera vez)
+├── .env                     # Credenciales/config real — NO se comparte (falta crearlo la primera vez)
 ├── .env.example               # Plantilla del .env, sin secretos
+├── aws_credentials.json         # JSON de credenciales AWS (gitignored) — ver "Subida a AWS"
 ├── img/
 │   └── logo1.png              # Logo que se muestra en el header
 ├── tests/
 │   ├── conftest.py               # Fixtures — importan core.analysis directo (ver "Tests" más abajo)
 │   └── test_analisis.py          # Tests de las validaciones TA/AID/UDZ
-├── scripts/                   # Reservado — subida a S3/DynamoDB (ver scripts/README.md). Vacío por ahora.
+├── scripts/                   # Reservado para scripts sueltos de mantenimiento (ver scripts/README.md).
+│                                # La subida a AWS NO vive acá — quedó integrada en core/aws_upload.py.
 └── Backlog_Dealer/              # Datos de trabajo: HU descargadas + análisis + Excel consolidado.
                                  # Se genera solo, no es código. Ruta configurable via ROOT_FOLDER en .env.
 ```
@@ -75,6 +79,8 @@ intencional (son operaciones interactivas), no lógica de layout.
 | `ITERATION_PATH` | Sprint por defecto al abrir la app |
 | `ROOT_FOLDER` | Carpeta local donde se descargan/analizan las HU |
 | `DEALER_NAME` | Nombre del ingeniero asignado, para filtrar HU en ADO |
+| `AWS_CRED_FILE` | *Opcional.* Ruta al JSON de credenciales AWS. Por default ya apunta a `aws_credentials.json` en la raíz del proyecto — normalmente no hace falta tocarla (ver "Subida a AWS") |
+| `AWS_TABLA_{AID,TA,UDZ}_{QA,PDN}` | *Opcionales (6 variables).* Sobreescriben el nombre de una tabla DynamoDB puntual sin tocar código — default en `core/config.py` (ver "Subida a AWS") |
 
 ## Trazabilidad y aprobación
 
@@ -89,6 +95,44 @@ corre la app — es trazabilidad básica, no un control de acceso real. Si esto
 necesita ser evidencia de auditoría formal, en algún momento va a hacer falta
 un login real (SSO/Azure AD) detrás.
 
+## Subida a AWS
+
+Paso 3 del pipeline (después de analizar, antes de aprobar para PDN): sube el
+TA/AID/UDZ **activo** de la HU seleccionada a la tabla DynamoDB del ambiente
+elegido (QA o PDN). Vive en `core/aws_upload.py` (lógica) + `ui/aws_console.py`
+(la consola, sección aparte al final de la página — no anidada en el detalle
+de la HU, para que el resultado de cada intento quede siempre visible).
+
+- **Envío siempre real** (no hay modo simulación): si falla la red, las
+  credenciales, o falta `boto3`, el error real queda en la consola tipo
+  terminal — nunca rompe el resto de la app.
+- **Verificación automática**: después de cada `put_item` exitoso, relee el
+  mismo item de la tabla (`get_item`) para confirmar que quedó guardado de
+  verdad, y lo deja en el log.
+- **PDN pide confirmación extra** (checkbox explícito) antes de habilitar el
+  botón, por ser escritura en producción.
+- **Credenciales**: JSON en `aws_credentials.json` (raíz del proyecto,
+  gitignored — mismo formato que ya usa `cargaaws.py`:
+  `aws_access_key_id`, `aws_secret_access_key`, `region_name`, y
+  `aws_session_token` solo si son credenciales temporales STS). La ruta se
+  resuelve por default sin tocar `.env`; solo hace falta `AWS_CRED_FILE` si
+  se quiere usar otra ubicación.
+- **Dónde cambiar el nombre de una tabla**: los 6 nombres (AID/TA/UDZ ×
+  QA/PDN) están en `core/config.py`, diccionario `AWS_TABLAS` — esos son el
+  default. Para cambiar uno sin tocar código, se sobreescribe con la variable
+  de entorno correspondiente en `.env` (`AWS_TABLA_TA_QA`, etc. — están
+  comentadas como ejemplo en `.env.example`).
+- **Partition key**: DynamoDB exige que el item tenga un atributo con el
+  mismo nombre que la partition key de la tabla. Los JSON de TA/AID/UDZ no
+  tienen un campo estándar para esto — si se recrea o cambia una tabla,
+  conviene usar un campo que ya exista de forma natural en ese componente
+  (`cu_name` para TA, `use_case` para AID, `id` para UDZ son los candidatos
+  naturales, ya usados en la validación de "coherencia" entre archivos).
+
+`scripts/` quedó reservado para scripts sueltos de mantenimiento — la subida
+a AWS **no** vive ahí, quedó integrada al dashboard porque necesita el
+TA/AID/UDZ ya resuelto por `analizar_hu()` y feedback en vivo en la UI.
+
 ## Roadmap (no implementado todavía)
 
 - **Migración a SharePoint**: hoy `Backlog_Dealer/` es una carpeta local
@@ -96,10 +140,9 @@ un login real (SSO/Azure AD) detrás.
   descarguen/suban desde una carpeta sincronizada con SharePoint en vez de
   disco local. No requiere cambios grandes en `app.py` — `ROOT_FOLDER` ya es
   configurable, solo hay que apuntarlo a la carpeta sincronizada.
-- **Subida a AWS (S3 / DynamoDB)**: hoy la app solo *valida* que los
-  `s3_path` y la config de UDZ sean coherentes, pero no toca AWS de verdad.
-  Los scripts que hagan la subida real van a vivir en `scripts/` (ver
-  `scripts/README.md`), separados del dashboard.
+- **Subida a S3**: hoy la app valida que los `s3_path` declarados en AID/UDZ
+  sean coherentes entre sí, pero no escribe archivos en S3. Solo se
+  implementó la escritura en DynamoDB (ver "Subida a AWS" arriba).
 
 ## Tests
 

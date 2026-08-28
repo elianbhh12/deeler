@@ -1,5 +1,6 @@
 # Secretos y config local
 .env
+aws_credentials.json
 
 # Entorno virtual
 .venv/

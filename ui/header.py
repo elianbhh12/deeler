@@ -34,6 +34,7 @@ def render_stepper(sprints_locales, hay_resultados: bool):
     paso1_cls = "done" if sprints_locales else "active"
     paso2_cls = "done" if hay_resultados else ("active" if sprints_locales else "")
     paso3_cls = "active" if hay_resultados else ""
+    paso4_cls = "active" if hay_resultados else ""
 
     st.markdown(f"""
     <div class="pipeline-stepper">
@@ -41,6 +42,8 @@ def render_stepper(sprints_locales, hay_resultados: bool):
         <span class="pipeline-arrow">→</span>
         <div class="pipeline-step {paso2_cls}"><span class="pipeline-step-num">2</span> Analizar componentes</div>
         <span class="pipeline-arrow">→</span>
-        <div class="pipeline-step {paso3_cls}"><span class="pipeline-step-num">3</span> Revisar y aprobar para PDN</div>
+        <div class="pipeline-step {paso3_cls}"><span class="pipeline-step-num">3</span> Subir a AWS QA</div>
+        <span class="pipeline-arrow">→</span>
+        <div class="pipeline-step {paso4_cls}"><span class="pipeline-step-num">4</span> Revisar y aprobar para PDN</div>
     </div>
     """, unsafe_allow_html=True)

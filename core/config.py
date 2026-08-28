@@ -6,10 +6,15 @@ para que cualquier otro módulo pueda importar de acá sin arrastrar nada más.
 import os
 import re
 import base64
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv(encoding="utf-8")
+
+#  Raíz del proyecto (core/ está un nivel adentro) — para resolver rutas
+#  relativas en .env sin importar desde dónde se lance streamlit.
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 #  Colores Banco (limpio y profesional)
 ACCENT  = "#FDDA24"   # amarillo — acento primario
@@ -49,6 +54,7 @@ MI_SETTINGS = ":material/settings:"
 MI_HELP     = ":material/help:"
 MI_APPROVE  = ":material/verified:"
 MI_GUIDE    = ":material/menu_book:"
+MI_CLOUD    = ":material/cloud_sync:"
 
 #  Estados de análisis (código lógico, separado del ícono de presentación)
 ESTADO_LISTO         = "LISTO"
@@ -94,6 +100,37 @@ KAFKA_TOPIC_REQUERIDO = "documentreceivingmanagement.documentuploadedv1"
 # la excepción confirmada para un step final que solo escribe/guarda
 # resultados y no publica evento — si aparece otro caso legítimo, agregarlo acá.
 AID_TYPE_VALIDOS = {"topic", "write_results"}
+
+#  Subida a AWS DynamoDB — ruta al JSON de credenciales temporales
+#  (aws_access_key_id/secret/session_token/region_name) y nombres de tabla por
+#  componente y ambiente. Coincide con lo que ya usa cargaaws.py en el banco.
+#  Los nombres de tabla son editables por .env (por si cambian sin tocar código);
+#  los valores de acá son el default si no se sobreescriben.
+#
+#  AWS_CRED_FILE no hace falta definirlo en .env: por default apunta a
+#  "aws_credentials.json" en la raíz del proyecto (ya está en .gitignore).
+#  Si se define, una ruta relativa se resuelve contra la raíz del proyecto
+#  (no contra el directorio desde donde se lanzó streamlit) — así funciona
+#  igual sin importar la máquina o desde dónde se corra run.bat.
+_aws_cred_file_env = os.getenv("AWS_CRED_FILE", "").strip()
+if _aws_cred_file_env:
+    _aws_cred_path = Path(_aws_cred_file_env)
+    AWS_CRED_FILE = str(_aws_cred_path if _aws_cred_path.is_absolute() else BASE_DIR / _aws_cred_path)
+else:
+    AWS_CRED_FILE = str(BASE_DIR / "aws_credentials.json")
+AWS_AMBIENTES = ("qa", "pdn")
+AWS_TABLAS = {
+    "qa": {
+        "aid": os.getenv("AWS_TABLA_AID_QA", "nu0087001-aid-r2-qa-dynamo-config-control"),
+        "ta":  os.getenv("AWS_TABLA_TA_QA",  "nu0600001-plataforma-ia-qa-text-analyzer-table"),
+        "udz": os.getenv("AWS_TABLA_UDZ_QA", "nu6490001-udz-qa-events-manager-table"),
+    },
+    "pdn": {
+        "aid": os.getenv("AWS_TABLA_AID_PDN", "nu0087001-aid-r2-pdn-dynamo-config-control"),
+        "ta":  os.getenv("AWS_TABLA_TA_PDN",  "nu0600001-plataforma-ia-pdn-text-analyzer-table"),
+        "udz": os.getenv("AWS_TABLA_UDZ_PDN", "nu6490001-udz-pdnevents-manager-table"),
+    },
+}
 
 # Sprint actual desde .env
 _sprint_default_num = ""

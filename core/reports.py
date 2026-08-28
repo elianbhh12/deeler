@@ -1,4 +1,10 @@
-"""Reportes: Excel consolidado del backlog y métricas de ciclo/efectividad."""
+"""Reportes: Excel consolidado del backlog y métricas de ciclo/efectividad.
+
+Paleta alineada a la identidad del banco (mismos colores que usa la interfaz,
+ver core/config.py) — deliberadamente sobria: acento amarillo + negro para
+encabezados, y verde/rojo solo puntuales para marcar estado, sin pintar filas
+enteras.
+"""
 from pathlib import Path
 from io import BytesIO
 from datetime import datetime
@@ -6,9 +12,61 @@ from collections import defaultdict
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
-from .config import ICON_OK, ICON_ERROR, ICON_WARNING, ICON_SUCCESS, ICON_FAIL
+from .config import (
+    ICON_OK, ICON_ERROR, ICON_WARNING, ICON_SUCCESS, ICON_FAIL,
+    ACCENT, INK, GREEN, RED, MUTED,
+)
 from .analysis import get_estado_code, ESTADO_LISTO, ESTADO_ERROR, ESTADO_INCOMPLETO, ESTADO_SIN_METADATA
+
+#  Colores del reporte — mismos que usa la app (sin el "#"), no un set aparte.
+_C_ACCENT = ACCENT.lstrip("#")   # amarillo banco — fondo de encabezado
+_C_INK    = INK.lstrip("#")      # negro — texto de encabezado y bordes
+_C_GREEN  = GREEN.lstrip("#")    # éxito
+_C_RED    = RED.lstrip("#")      # error
+_C_MUTED  = MUTED.lstrip("#")    # texto secundario / N/A
+_C_LINE   = "9C9A98"             # borde — gris oscuro, visible sin ser negro puro
+_C_BANDA  = "FAFAF9"             # banda de fila alterna, muy sutil (= SURFACE de la UI)
+
+_FUENTE = "Calibri"               # una sola fuente en todo el archivo
+_FONT_HEADER = Font(name=_FUENTE, bold=True, color=_C_INK)
+_FONT_DATA   = Font(name=_FUENTE, color=_C_INK)
+_ALIGN_CENTRO = Alignment(horizontal="center", vertical="center")
+_BORDE = Border(
+    left=Side(style="thin", color=_C_LINE),
+    right=Side(style="thin", color=_C_LINE),
+    top=Side(style="thin", color=_C_LINE),
+    bottom=Side(style="thin", color=_C_LINE),
+)
+
+
+def _header_style(ws, fila=1):
+    """Encabezado único y consistente para todas las hojas: fondo amarillo
+    banco, texto negro — la misma combinación en Consolidado y Efectividad."""
+    fill = PatternFill(start_color=_C_ACCENT, end_color=_C_ACCENT, fill_type="solid")
+    for cell in ws[fila]:
+        cell.fill = fill
+        cell.font = _FONT_HEADER
+        cell.alignment = _ALIGN_CENTRO
+        cell.border = _BORDE
+    ws.row_dimensions[fila].height = 20
+    ws.freeze_panes = f"A{fila + 1}"
+    ws.auto_filter.ref = f"A{fila}:{get_column_letter(ws.max_column)}{fila}"
+
+
+def _bandear_filas(ws, primera_fila_datos, ultima_fila):
+    """Pinta filas alternas con una banda muy sutil para que se vea como una
+    tabla real, sin tocar bordes/fuente/alineación (eso ya lo puso cada fila
+    al construirse) y sin pisar celdas que ya tengan un color propio (los
+    íconos ✓/✗ o el % de éxito)."""
+    banda_fill = PatternFill(start_color=_C_BANDA, end_color=_C_BANDA, fill_type="solid")
+    for fila in range(primera_fila_datos, ultima_fila + 1):
+        if (fila - primera_fila_datos) % 2 == 0:
+            continue
+        for cell in ws[fila]:
+            if cell.fill.fgColor.rgb in (None, "00000000"):
+                cell.fill = banda_fill
 
 
 def calcular_eficiencia_por_ciclo(created_date: str, downloaded_at: str, changed_date: str, estado_ado: str) -> tuple:
@@ -36,26 +94,11 @@ def generar_excel_consolidado(resultados: list, guardar_en_carpeta: Path = None)
     headers = ["ID", "Título", "Tipo", "Sprint", "Estado ADO",
                "Fecha Creación", "Fecha Descarga", "Fecha Cierre",
                "TA", "AID", "UDZ", "RNF", "Días Creación→Cierre", "Días Descarga→Cierre",
-               "Aprobado por", "Fecha aprobación"]
+               "Probado en QA por", "Fecha prueba QA", "Aprobado por", "Fecha aprobación",
+               "TA → AWS", "AID → AWS", "UDZ → AWS"]
 
     ws.append(headers)
-
-    # Estilos
-    header_fill = PatternFill(start_color="FDDA24", end_color="FDDA24", fill_type="solid")
-    header_font = Font(bold=True, color="000000")
-    border = Border(
-        left=Side(style="thin"),
-        right=Side(style="thin"),
-        top=Side(style="thin"),
-        bottom=Side(style="thin")
-    )
-
-    # Aplicar estilos a headers
-    for cell in ws[1]:
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.border = border
+    _header_style(ws)
 
     #  DATOS
     row = 2
@@ -97,10 +140,27 @@ def generar_excel_consolidado(resultados: list, guardar_en_carpeta: Path = None)
         udz = ICON_SUCCESS if "NO" not in arcs.get("UDZ", "") else ICON_FAIL
         rnf = ICON_SUCCESS if r.get("rnf_path") else ICON_FAIL
 
-        # Trazabilidad de aprobación para PDN
+        # Trazabilidad de QA y aprobación para PDN
+        probado_qa_por = r.get("probado_qa_por") or "-"
+        probado_qa_en_raw = r.get("probado_qa_en", "")
+        probado_qa_en = probado_qa_en_raw[:16].replace("T", " ") if probado_qa_en_raw else "-"
         aprobado_por = r.get("aprobado_por") or "-"
         aprobado_en_raw = r.get("aprobado_en", "")
         aprobado_en = aprobado_en_raw[:16].replace("T", " ") if aprobado_en_raw else "-"
+
+        # Trazabilidad de subida a AWS, por componente — quién, a qué
+        # ambiente y cuándo (ver ui/aws_console.py, que es quien la graba).
+        def _aws_txt(tipo_comp):
+            por = r.get(f"{tipo_comp}_aws_por")
+            if not por:
+                return "-"
+            amb = (r.get(f"{tipo_comp}_aws_ambiente") or "").upper()
+            en = (r.get(f"{tipo_comp}_aws_en") or "")[:16].replace("T", " ")
+            return f"{amb} · {por} · {en}"
+
+        ta_aws = _aws_txt("ta")
+        aid_aws = _aws_txt("aid")
+        udz_aws = _aws_txt("udz")
 
         # Agregar fila con nuevas fechas (sin Ambiente)
         ws.append([
@@ -108,18 +168,25 @@ def generar_excel_consolidado(resultados: list, guardar_en_carpeta: Path = None)
             fecha_creacion, fecha_descarga, fecha_cierre,
             ta, aid, udz, rnf,
             dias_creacion_str, dias_descarga_str,
-            aprobado_por, aprobado_en
+            probado_qa_por, probado_qa_en, aprobado_por, aprobado_en,
+            ta_aws, aid_aws, udz_aws
         ])
 
-        # Aplicar estilos a fila
+        # Aplicar estilos a fila: borde, centrado y una sola fuente en todo
+        # el archivo — verde/rojo solo en los íconos ✓/✗, el resto en negro.
         for cell in ws[row]:
-            cell.border = border
+            cell.border = _BORDE
+            cell.alignment = _ALIGN_CENTRO
             if ICON_SUCCESS in str(cell.value):
-                cell.font = Font(color="008000")
+                cell.font = Font(name=_FUENTE, color=_C_GREEN)
             elif ICON_FAIL in str(cell.value):
-                cell.font = Font(color="FF0000")
+                cell.font = Font(name=_FUENTE, color=_C_RED)
+            else:
+                cell.font = _FONT_DATA
 
         row += 1
+
+    _bandear_filas(ws, 2, row - 1)
 
     #  AJUSTAR ANCHO COLUMNAS
     ws.column_dimensions["A"].width = 12   # ID
@@ -136,8 +203,13 @@ def generar_excel_consolidado(resultados: list, guardar_en_carpeta: Path = None)
     ws.column_dimensions["L"].width = 5    # RNF
     ws.column_dimensions["M"].width = 20   # Días Creación→Cierre
     ws.column_dimensions["N"].width = 20   # Días Descarga→Cierre
-    ws.column_dimensions["O"].width = 18   # Aprobado por
-    ws.column_dimensions["P"].width = 18   # Fecha aprobación
+    ws.column_dimensions["O"].width = 18   # Probado en QA por
+    ws.column_dimensions["P"].width = 18   # Fecha prueba QA
+    ws.column_dimensions["Q"].width = 18   # Aprobado por
+    ws.column_dimensions["R"].width = 18   # Fecha aprobación
+    ws.column_dimensions["S"].width = 26   # TA → AWS
+    ws.column_dimensions["T"].width = 26   # AID → AWS
+    ws.column_dimensions["U"].width = 26   # UDZ → AWS
 
     #  HOJA: EFECTIVIDAD
     ws_ef = wb.create_sheet("Efectividad")
@@ -150,15 +222,10 @@ def generar_excel_consolidado(resultados: list, guardar_en_carpeta: Path = None)
     ef_headers = [
         "Sprint", "Total HU", f"{ICON_OK} Listos", f"{ICON_ERROR} Con Errores", f"{ICON_WARNING} Incompletos",
         "% éxito", "Errores en TA", "Errores en AID", "Errores en UDZ",
-        "DESPLIEGUE", "MODIFICACIÓN", "Fecha Análisis"
+        "DESPLIEGUE", "MODIFICACIÓN", "Subido a AWS", "Fecha Análisis"
     ]
     ws_ef.append(ef_headers)
-
-    for cell in ws_ef[1]:
-        cell.fill = PatternFill(start_color="2C2A29", end_color="2C2A29", fill_type="solid")
-        cell.font = Font(bold=True, color="FDDA24")
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.border = border
+    _header_style(ws_ef)
 
     ef_row = 2
     for sprint_name, hu_list in sorted(sprints_data.items()):
@@ -186,27 +253,35 @@ def generar_excel_consolidado(resultados: list, guardar_en_carpeta: Path = None)
         desp = sum(1 for r in hu_list if "DESP" in r.get("tipo_cambio", "").upper())
         modi = sum(1 for r in hu_list if "MODI" in r.get("tipo_cambio", "").upper())
 
+        # Eficiencia de despliegue real: cuántas HU del sprint tuvieron al
+        # menos un componente efectivamente subido a AWS (no solo validado).
+        subidas_aws = sum(
+            1 for r in hu_list
+            if any(r.get(f"{t}_aws_por") for t in ("ta", "aid", "udz"))
+        )
+
         # Fecha del análisis más reciente del sprint
         fechas = [r.get("downloaded_at", "")[:10] for r in hu_list if r.get("downloaded_at")]
         fecha_analisis = max(fechas) if fechas else datetime.now().strftime("%Y-%m-%d")
 
         ws_ef.append([sprint_name, total, listos, errores, incompl, pct,
-                       err_ta, err_aid, err_udz, desp, modi, fecha_analisis])
+                       err_ta, err_aid, err_udz, desp, modi, subidas_aws, fecha_analisis])
 
-        # Color de fila según % éxito
-        fill_row = PatternFill(
-            start_color="D1FAE5" if listos == total else ("FEF3C7" if errores < total // 2 else "FEE2E2"),
-            end_color  ="D1FAE5" if listos == total else ("FEF3C7" if errores < total // 2 else "FEE2E2"),
-            fill_type="solid"
-        )
+        # Sin pintar la fila entera (muy cargado visualmente) — solo un
+        # indicador puntual de color en la celda de "% éxito". Misma fuente
+        # y centrado que el resto del archivo.
+        pct_color = _C_GREEN if listos == total else (_C_RED if errores >= total - listos else "B45309")
         for cell in ws_ef[ef_row]:
-            cell.border = border
-            cell.alignment = Alignment(horizontal="center")
-            cell.fill = fill_row
+            cell.border = _BORDE
+            cell.alignment = _ALIGN_CENTRO
+            cell.font = _FONT_DATA
+        ws_ef.cell(row=ef_row, column=6).font = Font(name=_FUENTE, bold=True, color=pct_color)
         ef_row += 1
 
+    _bandear_filas(ws_ef, 2, ef_row - 1)
+
     # Anchos
-    for col, w in zip("ABCDEFGHIJKL", [22, 10, 12, 14, 14, 10, 12, 12, 12, 14, 14, 16]):
+    for col, w in zip("ABCDEFGHIJKLM", [22, 10, 12, 14, 14, 10, 12, 12, 12, 14, 14, 14, 16]):
         ws_ef.column_dimensions[col].width = w
 
     # Guardar a bytes

@@ -862,5 +862,89 @@ section[data-testid="stSidebar"] .stInfo {{
  margin-top: 2px;
 }}
 
+/* =======================================================================
+ CONSOLA "SUBIR A AWS"
+ ======================================================================= */
+
+.aws-card {{
+ background: white;
+ border: 1px solid var(--line);
+ border-left: 4px solid var(--line);
+ border-radius: 12px;
+ padding: 14px 16px;
+ box-shadow: var(--shadow-sm);
+ height: 100%;
+ box-sizing: border-box;
+}}
+
+.aws-card.ok   {{ border-left-color: var(--green); }}
+.aws-card.warn {{ border-left-color: var(--orange); background: #FFFDF8; }}
+.aws-card.na   {{ border-left-color: var(--line); }}
+
+.aws-card-title {{
+ font-size: 13.5px;
+ font-weight: 800;
+ display: flex;
+ align-items: center;
+ gap: 6px;
+ margin-bottom: 4px;
+}}
+
+.aws-card-criterio {{
+ font-size: 11px;
+ color: var(--muted);
+ line-height: 1.5;
+ margin-bottom: 8px;
+}}
+
+.aws-table-tag {{
+ display: block;
+ font-size: 10.5px;
+ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+ color: #374151;
+ background: var(--track);
+ border: 1px solid var(--line);
+ border-radius: 6px;
+ padding: 4px 8px;
+ margin-bottom: 10px;
+ word-break: break-all;
+}}
+
+.aws-console {{
+ background: #1E1E1E;
+ border-radius: 10px;
+ padding: 14px 16px;
+ max-height: 340px;
+ overflow-y: auto;
+ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+ font-size: 12px;
+ line-height: 1.65;
+ box-shadow: var(--shadow-sm);
+}}
+
+.aws-console-line {{ color: #D4D4D4; white-space: pre-wrap; word-break: break-all; }}
+.aws-console-line.err  {{ color: #F87171; font-weight: 600; }}
+.aws-console-line.warn {{ color: #FBBF24; font-weight: 600; }}
+.aws-console-line.ok   {{ color: #4ADE80; font-weight: 600; }}
+.aws-console-empty {{ color: #6B7280; font-style: italic; }}
+
+.aws-alert {{
+ background: #FEF3C7;
+ border: 1px solid #FDE68A;
+ border-radius: 8px;
+ padding: 8px 10px;
+ margin: 8px 0;
+ font-size: 11px;
+ line-height: 1.5;
+ color: #92400E;
+}}
+
+.aws-alert code {{
+ background: rgba(0,0,0,.06);
+ padding: 1px 5px;
+ border-radius: 4px;
+ font-size: 10.5px;
+}}
+
 </style>
 """, unsafe_allow_html=True)
