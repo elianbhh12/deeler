@@ -1,0 +1,178 @@
+import json
+from pathlib import Path
+
+import pytest
+
+
+#  Helpers de bajo nivel
+
+def test_buscar_clave_encuentra_anidado(appmod):
+    data = {"a": {"b": [{"c": 1}, {"target": "valor"}]}}
+    assert appmod.buscar_clave(data, "target") == "valor"
+
+
+def test_buscar_clave_no_encontrada_retorna_none(appmod):
+    assert appmod.buscar_clave({"a": 1}, "no_existe") is None
+
+
+def test_buscar_clave_todos_acumula_todas_las_ocurrencias(appmod):
+    data = {"steps": [{"LAST_STEP": "False"}, {"LAST_STEP": "True"}]}
+    out = []
+    appmod.buscar_clave_todos(data, "LAST_STEP", out)
+    assert out == ["False", "True"]
+
+
+@pytest.mark.parametrize("s3, esperado", [
+    ("s3://bucket-pdn-x/resultados", "PDN"),
+    ("s3://bucket-prod-x/resultados", "PDN"),
+    ("s3://bucket-qa-x/resultados", "QA"),
+    ("s3://bucket-dev-x/resultados", "DEV"),
+    ("s3://bucket-uat-x/resultados", "UAT"),
+    ("s3://bucket-x/resultados", "DESCONOCIDO"),
+])
+def test_detectar_ambiente(appmod, s3, esperado):
+    assert appmod.detectar_ambiente(s3) == esperado
+
+
+def test_normalizar_s3_ignora_slash_final(appmod):
+    assert appmod.normalizar_s3("s3://bucket/ruta/") == appmod.normalizar_s3("s3://bucket/ruta")
+
+
+#  estado_code / estado_general (contrato lógica-vs-presentación)
+
+def test_get_estado_code_usa_estado_code_si_existe(appmod):
+    r = {"estado_code": appmod.ESTADO_ERROR, "estado_general": "cualquier texto"}
+    assert appmod.get_estado_code(r) == appmod.ESTADO_ERROR
+
+
+def test_get_estado_code_infiere_de_estado_general_si_falta(appmod):
+    """Compatibilidad con análisis guardados antes de introducir estado_code."""
+    r_listo = {"estado_general": f"{appmod.ICON_OK} LISTO"}
+    r_error = {"estado_general": f"{appmod.ICON_ERROR} ERRORES CRÍTICOS"}
+    assert appmod.get_estado_code(r_listo) == appmod.ESTADO_LISTO
+    assert appmod.get_estado_code(r_error) == appmod.ESTADO_ERROR
+
+
+#  analizar_hu sobre las HU de ejemplo (Backlog_Dealer/)
+
+def test_analizar_hu_despliegue_correcto_queda_listo(appmod, fixtures_dir):
+    r = appmod.analizar_hu(fixtures_dir / "1001-Despliegue Nuevo Caso PIA")
+    assert r["estado_code"] == appmod.ESTADO_LISTO
+
+
+def test_analizar_hu_modificacion_solo_ta_queda_listo(appmod, fixtures_dir):
+    r = appmod.analizar_hu(fixtures_dir / "1002-Modificacion Prompt PIA")
+    assert r["estado_code"] == appmod.ESTADO_LISTO
+    assert r["tipo_cambio"] == "MODIFICACIÓN"
+
+
+def test_analizar_hu_despliegue_con_inconsistencias_queda_en_error(appmod, fixtures_dir):
+    r = appmod.analizar_hu(fixtures_dir / "1003-Despliegue Con Errores PIA")
+    assert r["estado_code"] == appmod.ESTADO_ERROR
+
+
+#  Regresión: out_zone_copiar debe poder bloquear el estado
+
+def _escribir_hu_minima(base: Path, ta: dict, aid: dict, udz: dict, tipo_cambio: str) -> Path:
+    hu = base / "9001-hu-test"
+    adj = hu / "adjuntos"
+    adj.mkdir(parents=True, exist_ok=True)
+    (hu / "metadata.json").write_text(json.dumps({
+        "id": 9001, "title": "HU de prueba", "state": "Active",
+        "tipo_cambio": tipo_cambio, "downloaded_at": "2026-01-01T00:00:00",
+        "attachments": [],
+    }), encoding="utf-8")
+    (adj / "ta_test.json").write_text(json.dumps(ta), encoding="utf-8")
+    (adj / "aid_test.json").write_text(json.dumps(aid), encoding="utf-8")
+    (adj / "udz_test.json").write_text(json.dumps(udz), encoding="utf-8")
+    return hu
+
+
+def test_out_zone_sin_copiar_bucket_bloquea_el_estado(appmod, tmp_path):
+    """Regresión del bug donde out_zone_copiar nunca podía marcar ERROR: la clave
+    'ok' que leía el agregador de criticos no existía en ese dict (solo existían
+    out_zone_ok/copiar_ok), así que .get('ok', True) siempre devolvía True."""
+    ta = {
+        "cu_name": "caso_test", "type": "prompts",
+        "kafka_output_topic": "documentreceivingmanagement.documentuploadedv1",
+    }
+    aid = {
+        "workflow_name": "aid-pdn-test", "s3_path": "s3://bucket-pdn-test/resultados",
+        "use_case": "caso_test", "TYPE": "topic",
+        "workflow_variables": {"tecnologia": "AID"},
+        "workflow_definition": [{
+            "STEP_NAME": "step1", "FUNCTION_NAME": "call_api", "LAST_STEP": "False",
+            "STEP_VARIABLES": {"JOB_NAME": "job1", "out_zone": "s3://bucket-pdn-test/out/"},
+            # out_zone presente pero SIN copiarResultadoBucket -> debe ser error
+        }],
+    }
+    udz = {"item": {
+        "id": "aid-pdn-test", "s3_path": "s3://bucket-pdn-test/resultados",
+        "require_transmission": "true", "emit_event": "false",
+    }}
+    hu_folder = _escribir_hu_minima(tmp_path, ta, aid, udz, "DESPLIEGUE")
+
+    r = appmod.analizar_hu(hu_folder)
+
+    assert r["validaciones"]["out_zone_copiar"]["out_zone_ok"] is False
+    assert r["estado_code"] == appmod.ESTADO_ERROR, (
+        "out_zone sin copiarResultadoBucket=True debe bloquear el estado LISTO"
+    )
+
+
+#  Regresión: kafka_output_topic y TYPE deben validar TODAS las ocurrencias, no solo la primera
+
+def test_kafka_topic_detecta_mismatch_en_ocurrencia_no_primera(appmod, tmp_path):
+    ta = {
+        "cu_name": "caso_multi", "type": "prompts",
+        "data": {
+            "kafka_output_topic": appmod.KAFKA_TOPIC_REQUERIDO,
+            "extra_step": {"kafka_output_topic": "otro.topic.incorrecto"},
+        },
+    }
+    aid = {
+        "workflow_name": "aid-pdn-multi", "s3_path": "s3://bucket-pdn-multi/resultados",
+        "use_case": "caso_multi", "TYPE": "topic",
+        "workflow_variables": {"tecnologia": "AID"},
+        "workflow_definition": [{"STEP_NAME": "step1", "LAST_STEP": "False"}],
+    }
+    udz = {"item": {
+        "id": "aid-pdn-multi", "s3_path": "s3://bucket-pdn-multi/resultados",
+        "require_transmission": "true", "emit_event": "false",
+    }}
+    hu_folder = _escribir_hu_minima(tmp_path, ta, aid, udz, "DESPLIEGUE")
+
+    r = appmod.analizar_hu(hu_folder)
+
+    assert len(r["validaciones"]["kafka"]["topics"]) == 2
+    assert r["validaciones"]["kafka"]["ok"] is False, (
+        "si CUALQUIER ocurrencia de kafka_output_topic no coincide, la validación debe fallar"
+    )
+
+
+def test_aid_type_detecta_mismatch_en_step_no_primero(appmod, tmp_path):
+    ta = {
+        "cu_name": "caso_multi2", "type": "prompts",
+        "kafka_output_topic": appmod.KAFKA_TOPIC_REQUERIDO,
+    }
+    aid = {
+        "workflow_name": "aid-pdn-multi2", "s3_path": "s3://bucket-pdn-multi2/resultados",
+        "use_case": "caso_multi2",
+        "workflow_variables": {"tecnologia": "AID"},
+        "workflow_definition": [
+            {"STEP_NAME": "step1", "TYPE": "topic", "LAST_STEP": "False"},
+            {"STEP_NAME": "step2", "TYPE": "event", "LAST_STEP": "False"},
+        ],
+    }
+    udz = {"item": {
+        "id": "aid-pdn-multi2", "s3_path": "s3://bucket-pdn-multi2/resultados",
+        "require_transmission": "true", "emit_event": "false",
+    }}
+    hu_folder = _escribir_hu_minima(tmp_path, ta, aid, udz, "DESPLIEGUE")
+
+    r = appmod.analizar_hu(hu_folder)
+
+    assert len(r["validaciones"]["aid_type_topic"]["types"]) == 2
+    assert r["validaciones"]["aid_type_topic"]["ok"] is False, (
+        "si CUALQUIER step tiene TYPE distinto de 'topic', la validación debe fallar"
+    )

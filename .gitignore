@@ -1,0 +1,19 @@
+# Secretos y config local
+.env
+
+# Entorno virtual
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# IDE
+.idea/
+
+# Datos de trabajo (descargas y análisis por sprint — no es código)
+Backlog_Dealer/
+
+# Excel generado
+Consolidado_Backlog.xlsx
