@@ -159,6 +159,15 @@ def descargar_hu(iteration_path: str):
             if rel.get("rel") == "AttachedFile":
                 url  = rel["url"]
                 name = rel.get("attributes", {}).get("name", "adjunto.bin")
+
+                # Metadata "fantasma" de macOS (resource fork "._nombre" o
+                # ".DS_Store") — pasa también cuando se adjuntan archivos
+                # sueltos (no en un .zip) desde Mac, no solo dentro de un ZIP.
+                # Se descarta antes de gastar la descarga.
+                if name.startswith("._") or name == ".DS_Store":
+                    log_info(f"Ignorado (metadata de macOS): {name}")
+                    continue
+
                 out  = adj_folder / safe_name(name, 120)
                 try:
                     resp = requests.get(url, headers=HEADERS, timeout=60)
