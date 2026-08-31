@@ -130,10 +130,15 @@ def descargar_hu(iteration_path: str):
     # Windows: se calcula según el ROOT_FOLDER real (no un número fijo
     # adivinado) — así en un ROOT_FOLDER corto el título sale casi completo,
     # y solo se recorta lo justo y necesario cuando el ROOT_FOLDER es largo.
-    # Reserva: "\adjuntos\" (10) + nombre de archivo hasta 120 (el máximo que
-    # ya permite safe_name para adjuntos) + "wid-" al principio (~10).
-    _margen_archivo = 10 + 120 + 10
-    _max_len_titulo = max(20, min(100, 260 - len(str(sprint_folder)) - _margen_archivo))
+    # El título importa para poder identificar la HU a simple vista en el
+    # Explorador, así que la reserva para el adjunto usa un largo realista
+    # (~85, los nombres reales rondan 60-70) en vez del máximo teórico (120,
+    # el límite que sigue permitiendo safe_name para adjuntos) — en el caso
+    # raro de un adjunto excepcionalmente largo, cargar_json ya avisa con un
+    # mensaje claro en vez de romper (ver core/analysis.py), así que vale la
+    # pena priorizar el título en el caso común.
+    _margen_archivo = 10 + 85 + 10  # "\adjuntos\" + nombre de archivo + "wid-"
+    _max_len_titulo = max(30, min(120, 260 - len(str(sprint_folder)) - _margen_archivo))
 
     sin_asignar = []  # HU sin asignar para notificar al final
     errores_zip = []  # ZIPs que no se pudieron descomprimir — el log_container
