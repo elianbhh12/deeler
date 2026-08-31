@@ -172,11 +172,18 @@ def descargar_hu(iteration_path: str):
                         try:
                             with zipfile.ZipFile(out, "r") as zf:
                                 for member in zf.namelist():
+                                    nombre_miembro = Path(member).name
+                                    # ZIPs armados en Mac traen, por cada archivo real, una
+                                    # copia "fantasma" con metadata (resource fork) dentro de
+                                    # __MACOSX/ y con el nombre prefijado "._" — nunca es
+                                    # contenido real, se descarta siempre.
+                                    if "__MACOSX" in Path(member).parts or nombre_miembro.startswith("._"):
+                                        continue
                                     ext = Path(member).suffix.lower()
                                     if ext in (".hs", ".json", ".yaml", ".yml", ".txt", ".xml"):
-                                        target = adj_folder / safe_name(Path(member).name, 120)
+                                        target = adj_folder / safe_name(nombre_miembro, 120)
                                         target.write_bytes(zf.read(member))
-                                        log_info(f"Extraído: {Path(member).name}")
+                                        log_info(f"Extraído: {nombre_miembro}")
                             out.unlink()  # eliminar el ZIP original
                         except Exception as ze:
                             log_warning(f"No se pudo descomprimir {name}: {ze}")

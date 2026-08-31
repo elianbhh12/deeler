@@ -177,6 +177,12 @@ def buscar_archivos(hu_folder: Path):
     for f in adj.iterdir():
         if f.suffix != ".json":
             continue
+        if f.name.startswith("._"):
+            # Metadata "fantasma" que deja un ZIP armado en Mac (resource fork)
+            # — no es contenido real. Ya se filtra al descomprimir
+            # (core/ado_client.py), esto es una segunda barrera por si el
+            # archivo ya estaba en disco de una descarga anterior a ese fix.
+            continue
         stem = f.stem.lower()
 
         # 1. Detecta por nombre (más confiable)

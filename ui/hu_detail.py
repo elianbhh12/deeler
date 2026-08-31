@@ -52,15 +52,25 @@ def render_hu_detail(resultados, sprint_activo):
         _icon  = ESTADO_ICON.get(get_estado_code(r), ICON_WARNING)
         return f"{_icon} {_id} — {_title} [{_tipo}]"
 
-    hu_options = {_hu_label(r): r for r in resultados}
-    if not hu_options:
+    if not resultados:
         st.warning("No hay HU para mostrar con los filtros seleccionados")
         st.stop()
 
-    seleccion  = st.selectbox("Selecciona una HU para ver detalles", list(hu_options.keys()), key="hu_select")
+    # El selectbox persiste el hu_id (estable) como valor, no el label
+    # armado (que trae un ícono de estado que puede cambiar al re-analizar,
+    # ej. al elegir otro TA/AID/UDZ) — si persistiera el label, un cambio de
+    # ícono hace que la opción anterior ya no exista en la lista nueva y
+    # Streamlit vuelve en silencio a la primera HU de la lista.
+    hu_por_id = {r.get("hu_id"): r for r in resultados}
+    seleccion_id = st.selectbox(
+        "Selecciona una HU para ver detalles",
+        list(hu_por_id.keys()),
+        format_func=lambda hid: _hu_label(hu_por_id[hid]),
+        key="hu_select",
+    )
 
-    if seleccion:
-        r   = hu_options[seleccion]
+    if seleccion_id is not None:
+        r   = hu_por_id[seleccion_id]
         val = r.get("validaciones", {})
         #  La HU activa se guarda acá para que la consola de "Subir a AWS QA"
         #  (sección aparte, más abajo en la página) sepa a cuál referirse sin

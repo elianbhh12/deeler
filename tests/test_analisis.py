@@ -226,3 +226,21 @@ def test_aid_type_write_results_es_una_excepcion_valida(appmod, tmp_path):
     assert r["validaciones"]["aid_type_topic"]["ok"] is True, (
         "TYPE='write_results' en un step final es una excepción válida, no debe marcar error"
     )
+
+
+#  Regresión: ZIPs armados en Mac traen "._archivo.json" (metadata fantasma)
+
+def test_buscar_archivos_ignora_archivos_fantasma_de_mac(appmod, tmp_path):
+    """Un ZIP comprimido en Mac agrega, junto a cada archivo real, una copia
+    oculta con metadata (resource fork) prefijada '._' — no debe detectarse
+    como un TA/AID/UDZ real, ni contarse entre los archivos disponibles."""
+    hu_folder = tmp_path / "hu-mac"
+    adj = hu_folder / "adjuntos"
+    adj.mkdir(parents=True)
+    (adj / "ta_pia_demo.json").write_text('{"cu_name": "x"}', encoding="utf-8")
+    (adj / "._ta_pia_demo.json").write_text("basura binaria de macOS", encoding="utf-8")
+
+    arcs = appmod.buscar_archivos(hu_folder)
+
+    assert arcs["ta"].name == "ta_pia_demo.json"
+    assert len(arcs["ta_files"]) == 1

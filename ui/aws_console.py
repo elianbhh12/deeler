@@ -15,8 +15,8 @@ from pathlib import Path
 
 import streamlit as st
 
-from core.config import ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, MI_CLOUD, MI_INFO, AWS_TABLAS
-from core.analysis import _val_ok
+from core.config import ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, MI_CLOUD, MI_INFO, MI_REFRESH, AWS_TABLAS
+from core.analysis import _val_ok, analizar_hu
 from core.aws_upload import subir_componente
 from core.utils import obtener_usuario_actual
 
@@ -51,6 +51,32 @@ LIMITE_PREVIEW_KB = 30
 def _motivos_bloqueo(val: dict, keys: list) -> list:
     """Validaciones relevantes para este componente que están en error (no N/A)."""
     return [k for k in keys if not val.get(k, {}).get("na", False) and not _val_ok(val.get(k, {}))]
+
+
+def _verificar_ambiente(tipo: str, val: dict, ambiente_destino: str):
+    """Antes de subir, confirma que el archivo realmente es del ambiente
+    elegido — evita mandar por error un AID/UDZ de QA a la tabla de PDN (o
+    viceversa). TA no declara ambiente en su estructura, no aplica.
+
+    AID: se fija en el ambiente que ya detectó analizar_hu a partir del
+    s3_path (debe contener "-qa-"/"-pdn-"/etc.).
+    UDZ: mismo criterio pero sobre el campo `id` del UDZ.
+
+    Si el ambiente no se pudo detectar (DESCONOCIDO), bloquea igual — no
+    hay forma de confirmar que coincide con QA/PDN, así que no se sube."""
+    if tipo == "ta":
+        return True, None
+
+    if tipo == "aid":
+        detectado = val.get("ambiente", {}).get("ambiente")
+    else:  # udz
+        detectado = val.get("ambiente_workflow_id", {}).get("udz_ambiente")
+
+    if not detectado or detectado == "DESCONOCIDO":
+        return False, f"No se pudo detectar el ambiente del {tipo.upper()} — revisá que el s3_path/id contenga '{ambiente_destino}'"
+    if detectado.upper() != ambiente_destino.upper():
+        return False, f"El {tipo.upper()} parece ser de {detectado}, no de {ambiente_destino.upper()} — no se sube"
+    return True, None
 
 
 def _render_consola(log_lineas):
@@ -177,9 +203,26 @@ def render_aws_console(resultados):
                     f"{ICON_OK} Último envío: {html.escape(r[f'{tipo}_aws_por'])} · {_amb_prev} · {_fecha}</div>"
                 )
 
+            col_titulo, col_refresh = st.columns([0.82, 0.18], vertical_alignment="center")
+            with col_titulo:
+                st.markdown(f'<div class="aws-card-title" style="margin-top:6px">{icono} {tipo.upper()}</div>', unsafe_allow_html=True)
+            with col_refresh:
+                if st.button(
+                    "", key=f"aws_console_refresh_{tipo}", icon=MI_REFRESH,
+                    help=f"Relee el {tipo.upper()} del disco y recalcula sus validaciones",
+                ):
+                    hu_folder_str = r.get("hu_folder")
+                    if hu_folder_str:
+                        nuevo = analizar_hu(Path(hu_folder_str))
+                        for i, x in enumerate(resultados):
+                            if str(x.get("hu_id")) == str(r.get("hu_id")):
+                                resultados[i] = nuevo
+                                break
+                        st.session_state["resultados"] = resultados
+                        st.rerun()
+
             st.markdown(f"""
-            <div class="aws-card {cls_card}">
-                <div class="aws-card-title">{icono} {tipo.upper()}</div>
+            <div class="aws-card {cls_card}" style="border-top-left-radius:0;border-top-right-radius:0;margin-top:-8px">
                 <div class="aws-card-criterio">{criterio_txt}</div>
                 <div class="aws-table-tag"><b>Tabla:</b> {tabla_destino}</div>
                 {ultima_subida}
@@ -198,8 +241,18 @@ def render_aws_console(resultados):
                 </div>
                 """, unsafe_allow_html=True)
 
+            amb_ok, amb_motivo = _verificar_ambiente(tipo, val, ambiente) if archivo else (True, None)
+            if amb_motivo:
+                st.markdown(f"""
+                <div class="aws-alert" style="background:#FEE2E2;border-color:#FCA5A5;color:#991B1B">
+                    <b>{ICON_ERROR} Ambiente no coincide:</b> {html.escape(amb_motivo)}
+                </div>
+                """, unsafe_allow_html=True)
+
             if not archivo:
                 ayuda = f"No hay archivo {tipo.upper()} activo para esta HU"
+            elif not amb_ok:
+                ayuda = amb_motivo
             elif ambiente == "pdn" and not confirma_pdn:
                 ayuda = "Marcá la confirmación de PDN primero"
             else:
