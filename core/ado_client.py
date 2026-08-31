@@ -107,6 +107,7 @@ def descargar_hu(iteration_path: str):
     errores_zip = []  # ZIPs que no se pudieron descomprimir — el log_container
                        # es compartido y se pisa entre attachments, así que
                        # esto se junta acá para mostrarlo persistente al final
+    errores_descarga = []  # adjuntos que fallaron al bajar (con el motivo real)
 
     for idx, wi in enumerate(nuevos, 1):
         wid       = wi["id"]
@@ -207,7 +208,8 @@ def descargar_hu(iteration_path: str):
 
                 except Exception as ex:
                     metadata["attachments"].append({"name": name, "downloaded": False, "error": str(ex)})
-                    log_warning(f"Error: {name}")
+                    log_warning(f"Error descargando {name}: {ex}")
+                    errores_descarga.append(f"HU {wid} — {name}: {ex}")
 
         (hu_folder / "metadata.json").write_text(
             json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -242,6 +244,16 @@ def descargar_hu(iteration_path: str):
             f"sin ese componente hasta que se resuelva (volvé a adjuntar el archivo sin comprimir, "
             f"o revisá que el ZIP no esté corrupto):\n\n" +
             "\n".join(f"- {e}" for e in errores_zip),
+            icon=MI_ERROR,
+        )
+
+    #  Alerta de adjuntos que fallaron al descargarse (con el motivo real de
+    #  requests — timeout, 404, permisos, etc.), mismo problema de log que se
+    #  pisa: antes esto solo decía "Error: nombre.zip" sin explicar por qué.
+    if errores_descarga:
+        st.error(
+            f"**{len(errores_descarga)} adjunto(s) no se pudieron descargar:**\n\n" +
+            "\n".join(f"- {e}" for e in errores_descarga),
             icon=MI_ERROR,
         )
 
