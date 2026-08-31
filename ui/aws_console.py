@@ -188,6 +188,14 @@ def render_aws_console(resultados):
     for (tipo, (keys, criterio_txt)), col in zip(CRITERIOS_ACEPTACION.items(), cols):
         with col:
             archivo = archivos_activos.get(tipo)
+            # El path activo viene de analisis_tecnico.json y puede quedar
+            # obsoleto: si el archivo real se borró/movió (o falló al
+            # descomprimirse) desde el último análisis, no debe romper la
+            # consola — se trata como "no disponible" hasta que se actualice.
+            archivo_perdido = bool(archivo) and not Path(archivo).exists()
+            if archivo_perdido:
+                archivo = None
+
             tabla_destino = AWS_TABLAS.get(ambiente, {}).get(tipo, "(sin configurar)")
             motivos = _motivos_bloqueo(val, keys) if archivo else []
             listo = bool(archivo) and not motivos
@@ -246,6 +254,14 @@ def render_aws_console(resultados):
                 st.markdown(f"""
                 <div class="aws-alert" style="background:#FEE2E2;border-color:#FCA5A5;color:#991B1B">
                     <b>{ICON_ERROR} Ambiente no coincide:</b> {html.escape(amb_motivo)}
+                </div>
+                """, unsafe_allow_html=True)
+
+            if archivo_perdido:
+                st.markdown(f"""
+                <div class="aws-alert" style="background:#FEE2E2;border-color:#FCA5A5;color:#991B1B">
+                    <b>{ICON_ERROR} El archivo ya no está en disco</b> — puede haberse movido, borrado, o
+                    falló al descomprimirse. Apretá el ícono de actualizar (arriba) para resincronizar.
                 </div>
                 """, unsafe_allow_html=True)
 

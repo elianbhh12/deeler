@@ -104,6 +104,9 @@ def descargar_hu(iteration_path: str):
     status_text  = st.empty()
 
     sin_asignar = []  # HU sin asignar para notificar al final
+    errores_zip = []  # ZIPs que no se pudieron descomprimir — el log_container
+                       # es compartido y se pisa entre attachments, así que
+                       # esto se junta acá para mostrarlo persistente al final
 
     for idx, wi in enumerate(nuevos, 1):
         wid       = wi["id"]
@@ -196,6 +199,7 @@ def descargar_hu(iteration_path: str):
                             out.unlink()  # eliminar el ZIP original
                         except Exception as ze:
                             log_warning(f"No se pudo descomprimir {name}: {ze}")
+                            errores_zip.append(f"HU {wid} — {name}: {ze}")
 
                 except Exception as ex:
                     metadata["attachments"].append({"name": name, "downloaded": False, "error": str(ex)})
@@ -223,6 +227,18 @@ def descargar_hu(iteration_path: str):
             f"**{len(sin_asignar)} HU sin asignar** — revísalas y asígnalas en ADO:\n\n" +
             "\n".join(f"- {hu}" for hu in sin_asignar),
             icon=MI_WARNING,
+        )
+
+    #  Alerta de ZIPs que no se pudieron descomprimir — sin esto, un adjunto
+    #  que falla queda con el TA/AID/UDZ faltante y sin explicación visible,
+    #  porque el aviso de arriba (log_warning) se pisa con el siguiente log.
+    if errores_zip:
+        st.error(
+            f"**{len(errores_zip)} adjunto(s) no se pudieron descomprimir** — esa HU va a quedar "
+            f"sin ese componente hasta que se resuelva (volvé a adjuntar el archivo sin comprimir, "
+            f"o revisá que el ZIP no esté corrupto):\n\n" +
+            "\n".join(f"- {e}" for e in errores_zip),
+            icon=MI_ERROR,
         )
 
     return len(nuevos)
