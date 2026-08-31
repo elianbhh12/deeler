@@ -1,6 +1,7 @@
 """Todo lo que habla con Azure DevOps: construir URLs y traer HU nuevas."""
 import re
 import json
+import time
 import zipfile
 from pathlib import Path
 from datetime import datetime
@@ -16,6 +17,22 @@ def ado_url(path, use_team=False):
     if use_team:
         return f"https://dev.azure.com/{ORG}/{PROJECT}/{TEAM}/_apis/{path}"
     return f"https://dev.azure.com/{ORG}/{PROJECT}/_apis/{path}"
+
+
+def _get_con_reintentos(url, headers, timeout=60, intentos=3, espera=1.5):
+    """GET con reintentos ante fallas transitorias de red (DNS, conexión
+    reseteada, timeout) — típico de una VPN corporativa bajo carga cuando se
+    hacen muchas descargas seguidas rápido: falla con algunos adjuntos, no
+    con todos, y el siguiente intento normalmente sí resuelve. No reintenta
+    errores HTTP reales (401/403/404) porque esos no se arreglan solos."""
+    for intento in range(1, intentos + 1):
+        try:
+            return requests.get(url, headers=headers, timeout=timeout)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            if intento >= intentos:
+                raise
+            time.sleep(espera)
+    raise RuntimeError("_get_con_reintentos: intentos debe ser >= 1")
 
 
 def descargar_hu(iteration_path: str):
@@ -69,7 +86,7 @@ def descargar_hu(iteration_path: str):
 
     ids_csv = ",".join(map(str, ids))
     try:
-        r = requests.get(
+        r = _get_con_reintentos(
             ado_url(f"wit/workitems?ids={ids_csv}&$expand=relations&api-version=7.1"),
             headers=HEADERS, timeout=30)
         r.raise_for_status()
@@ -174,7 +191,7 @@ def descargar_hu(iteration_path: str):
 
                 out  = adj_folder / safe_name(name, 120)
                 try:
-                    resp = requests.get(url, headers=HEADERS, timeout=60)
+                    resp = _get_con_reintentos(url, headers=HEADERS, timeout=60)
                     resp.raise_for_status()
                     out.write_bytes(resp.content)
                     metadata["attachments"].append({"name": name, "downloaded": True})
