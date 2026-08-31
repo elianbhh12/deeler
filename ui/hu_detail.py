@@ -268,7 +268,9 @@ def render_hu_detail(resultados, sprint_activo):
                             _res[_i] = r
                             break
                     st.session_state["resultados"] = _res
-                    st.success("Aprobación registrada", icon=MI_OK)
+                    # st.toast (no st.success) porque el rerun de abajo borra
+                    # cualquier mensaje inline antes de que llegue a mostrarse.
+                    st.toast("Aprobación registrada", icon=MI_OK)
                     st.rerun()
 
         #  SECCIÓN DE RNF

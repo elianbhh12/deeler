@@ -52,7 +52,10 @@ def render_paso1_paso2(sprints_locales):
                 with st.spinner("Descargando desde ADO..."):
                     n = descargar_hu(sprint_input)
                 if n > 0:
-                    st.success(f"{n} HU descargadas", icon=MI_OK)
+                    # st.toast (no st.success) porque el rerun de abajo borra
+                    # cualquier mensaje inline antes de que se llegue a leer
+                    # — el toast sí sobrevive al rerun, queda flotando.
+                    st.toast(f"{n} HU descargadas", icon=MI_OK)
                     st.rerun()
                 else:
                     st.warning("No hay HU con PIA en este sprint", icon=MI_WARNING)
@@ -93,7 +96,7 @@ def render_paso1_paso2(sprints_locales):
                 sprint_path = Path(ROOT_FOLDER) / sprint_sel_name
                 with st.spinner("Analizando TA, AID, UDZ..."):
                     resultados_new = analizar_sprint(sprint_path)
-                st.success(f"{len(resultados_new)} HU analizadas", icon=MI_OK)
+                st.toast(f"{len(resultados_new)} HU analizadas", icon=MI_OK)
                 st.session_state["resultados"]     = resultados_new
                 st.session_state["sprint_activo"]  = sprint_sel_name
                 st.session_state["_excel_pending"] = True
