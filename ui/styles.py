@@ -1,5 +1,4 @@
 """CSS del design system. Se inyecta una sola vez, al arrancar la app."""
-import streamlit.components.v1 as components
 import streamlit as st
 
 from core.config import INK, WHITE, SURFACE, ACCENT, GREEN, PURPLE, ORANGE, RED
@@ -12,13 +11,13 @@ def inject_scroll_restore():
     del scroll en sessionStorage del navegador y la restaura después de cada
     rerun, para que el usuario no pierda el lugar donde estaba mirando.
 
-    Corre dentro de un iframe (así funciona components.html), por eso opera
-    sobre window.parent — es la ventana real de la app, no el iframe. Y el
-    que hace scroll de verdad NO es la ventana (window.scrollY se queda
-    siempre en 0) sino el contenedor interno [data-testid="stMain"] — así
-    que se apunta directo a ese elemento, con window como respaldo por si
-    una versión futura de Streamlit cambia esa estructura."""
-    components.html("""
+    Corre dentro de un iframe (así funciona st.iframe con HTML crudo), por
+    eso opera sobre window.parent — es la ventana real de la app, no el
+    iframe. Y el que hace scroll de verdad NO es la ventana (window.scrollY
+    se queda siempre en 0) sino el contenedor interno [data-testid="stMain"]
+    — así que se apunta directo a ese elemento, con window como respaldo por
+    si una versión futura de Streamlit cambia esa estructura."""
+    st.iframe("""
     <script>
     (function() {
         const KEY = "aid_dealer_scroll_y";
