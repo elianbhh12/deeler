@@ -347,14 +347,18 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
     es_despliegue = "DESPLIEGUE" in tipo_cambio
 
     faltantes = [k for k, v in {"TA": ta, "AID": aid, "UDZ": udz}.items() if not v]
+    # DESPLIEGUE requiere los 3 archivos sin excepción — se marca INCOMPLETO,
+    # pero NO se corta acá: el análisis sigue de largo y calcula las 12
+    # validaciones igual (cada una ya sabe tratar ta/aid/udz=None como error
+    # cuando es_despliegue, ver los "(not es_despliegue)" de más abajo). Antes
+    # se retornaba temprano con "validaciones" vacío, y como la UI usa
+    # ok=True por default cuando no encuentra una clave, terminaba mostrando
+    # "12 correctas" — al revés de lo que pasaba en realidad.
+    incompleto_por_archivos = es_despliegue and bool(faltantes)
     if faltantes:
         if es_despliegue:
-            # DESPLIEGUE requiere los 3 archivos sin excepción
-            resultado["estado_code"] = ESTADO_INCOMPLETO
-            resultado["estado_general"] = estado_display(ESTADO_INCOMPLETO)
             for archivo in faltantes:
                 resultado["resumen"].append(f"{ICON_ERROR} {archivo}: no existe — requerido para DESPLIEGUE")
-            return resultado
         else:
             # MODIFICACIÓN: avisar pero continuar con los que hay
             for archivo in faltantes:
@@ -657,7 +661,13 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
         for k in VALIDATION_KEYS
         if not resultado["validaciones"].get(k, {}).get("na", False)
     ]
-    resultado["estado_code"] = ESTADO_LISTO if all(criticos) else ESTADO_ERROR
+    if incompleto_por_archivos:
+        # DESPLIEGUE sin TA/AID/UDZ: aunque las validaciones individuales ya
+        # quedaron marcadas como error (correctamente), el estado general es
+        # INCOMPLETO, no ERROR — todavía no hay ni los archivos base.
+        resultado["estado_code"] = ESTADO_INCOMPLETO
+    else:
+        resultado["estado_code"] = ESTADO_LISTO if all(criticos) else ESTADO_ERROR
     resultado["estado_general"] = estado_display(resultado["estado_code"])
 
     #  Trazabilidad: quién y cuándo se corrió este análisis

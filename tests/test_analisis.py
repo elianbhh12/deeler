@@ -244,3 +244,34 @@ def test_buscar_archivos_ignora_archivos_fantasma_de_mac(appmod, tmp_path):
 
     assert arcs["ta"].name == "ta_pia_demo.json"
     assert len(arcs["ta_files"]) == 1
+
+
+#  Regresión: DESPLIEGUE sin TA/AID/UDZ mostraba "12 correctas" en vez de INCOMPLETO
+
+def test_despliegue_sin_archivos_queda_incompleto_y_no_12_correctas(appmod, tmp_path):
+    """Bug reportado: cuando a un DESPLIEGUE le faltan TA/AID/UDZ, analizar_hu
+    cortaba temprano con "validaciones": {} — la UI, al no encontrar cada
+    clave, usaba el default ok=True y mostraba "12 correctas" aunque en
+    realidad no se validó nada. Ahora el análisis sigue de largo y calcula
+    las 12 validaciones igual (quedan en error, no vacías), y el estado
+    general sigue siendo INCOMPLETO."""
+    hu = tmp_path / "9002-hu-sin-archivos"
+    (hu / "adjuntos").mkdir(parents=True)
+    (hu / "metadata.json").write_text(json.dumps({
+        "id": 9002, "title": "HU sin adjuntos", "state": "Active",
+        "tipo_cambio": "DESPLIEGUE", "downloaded_at": "2026-01-01T00:00:00",
+        "attachments": [],
+    }), encoding="utf-8")
+
+    r = appmod.analizar_hu(hu)
+
+    assert r["estado_code"] == appmod.ESTADO_INCOMPLETO
+    # La clave del bug: "validaciones" no debe quedar vacía.
+    assert r["validaciones"] != {}
+    n_ok = sum(
+        1 for k in appmod.VALIDATION_KEYS
+        if not r["validaciones"].get(k, {}).get("na", False) and appmod._val_ok(r["validaciones"].get(k, {}))
+    )
+    assert n_ok < len(appmod.VALIDATION_KEYS), (
+        f"con TA/AID/UDZ faltantes no puede haber {n_ok}/{len(appmod.VALIDATION_KEYS)} validaciones 'correctas'"
+    )
