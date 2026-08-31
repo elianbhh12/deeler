@@ -83,3 +83,72 @@ def test_subir_componente_log_incluye_tabla_destino(tmp_path, monkeypatch):
     tabla_esperada = aws_upload.AWS_TABLAS["qa"]["ta"]
     assert any(tabla_esperada in linea for linea in resultado["log"])
     assert resultado["ok"] is False
+
+
+#  Regresión: DynamoDB no acepta float de Python, solo Decimal
+
+def test_subir_componente_convierte_floats_a_decimal(tmp_path, monkeypatch):
+    """DynamoDB (boto3) rechaza el tipo float nativo de Python con
+    'Float types are not supported. Use Decimal types instead.' — cualquier
+    número con punto decimal en el JSON (ej. un TA con "peso": 1.5) debe
+    llegar a put_item como Decimal, no como float."""
+    import sys
+    import types
+    from decimal import Decimal
+
+    archivo = tmp_path / "ta_con_float.json"
+    archivo.write_text(json.dumps({"cu_name": "caso_x", "peso": 1.5}), encoding="utf-8")
+
+    item_capturado = {}
+
+    class FakeTable:
+        def put_item(self, Item):
+            item_capturado.update(Item)
+
+        def get_item(self, Key):
+            return {"Item": item_capturado}
+
+        key_schema = [{"AttributeName": "cu_name"}]
+
+    class FakeDynamoResource:
+        def Table(self, nombre):
+            return FakeTable()
+
+    class FakeSTS:
+        def get_caller_identity(self):
+            return {"Account": "123", "Arn": "arn:aws:iam::123:user/test"}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            pass
+
+        def client(self, nombre, verify=None):
+            return FakeSTS()
+
+        def resource(self, nombre, verify=None):
+            return FakeDynamoResource()
+
+    fake_boto3 = types.ModuleType("boto3")
+    fake_boto3.Session = FakeSession
+
+    fake_botocore = types.ModuleType("botocore")
+    fake_botocore_exceptions = types.ModuleType("botocore.exceptions")
+    fake_botocore_exceptions.ClientError = type("ClientError", (Exception,), {})
+    fake_botocore_exceptions.NoCredentialsError = type("NoCredentialsError", (Exception,), {})
+    fake_botocore_exceptions.EndpointConnectionError = type("EndpointConnectionError", (Exception,), {})
+
+    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+    monkeypatch.setitem(sys.modules, "botocore", fake_botocore)
+    monkeypatch.setitem(sys.modules, "botocore.exceptions", fake_botocore_exceptions)
+
+    creds_path = tmp_path / "creds.json"
+    creds_path.write_text(json.dumps({
+        "aws_access_key_id": "AKIA123", "aws_secret_access_key": "x", "region_name": "us-east-1",
+    }), encoding="utf-8")
+    monkeypatch.setattr(aws_upload, "AWS_CRED_FILE", str(creds_path))
+
+    resultado = aws_upload.subir_componente("ta", archivo, ambiente="qa")
+
+    assert resultado["ok"] is True, resultado["log"]
+    assert isinstance(item_capturado["peso"], Decimal)
+    assert not isinstance(item_capturado["peso"], float)

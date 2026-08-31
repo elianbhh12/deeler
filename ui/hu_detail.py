@@ -306,6 +306,31 @@ def render_hu_detail(resultados, sprint_activo):
             else:
                 st.button("RNF no disponible", disabled=True, key=f"btn_rnf_dis_{r.get('hu_id')}", width='stretch')
 
+        #  Trazabilidad: confirmar que el RNF ya se copió al Excel/consolidado
+        #  del área — acto explícito del usuario, igual que QA/aprobación, se
+        #  guarda en analisis_tecnico.json (no solo en esta sesión).
+        if rnf_path:
+            _rnf_copiado_por = r.get("rnf_copiado_por")
+            if _rnf_copiado_por:
+                _rnf_copiado_en_fmt = (r.get("rnf_copiado_en") or "")[:16].replace("T", " ")
+                st.caption(f"{ICON_OK} RNF copiado al acumulado por {_rnf_copiado_por} — {_rnf_copiado_en_fmt}")
+            else:
+                if st.button("Marcar RNF copiado al acumulado", key=f"btn_rnf_copiado_{r.get('hu_id')}",
+                             icon=MI_OK, help="Confirmá esto después de pasar los datos del RNF al Excel acumulado del área"):
+                    if hu_folder:
+                        r["rnf_copiado_por"] = obtener_usuario_actual()
+                        r["rnf_copiado_en"] = datetime.now().isoformat()
+                        out_path = hu_folder / "analisis" / "analisis_tecnico.json"
+                        out_path.write_text(json.dumps(r, indent=2, ensure_ascii=False), encoding="utf-8")
+                        _res = st.session_state.get("resultados", [])
+                        for _i, _x in enumerate(_res):
+                            if str(_x.get("hu_id")) == str(r.get("hu_id")):
+                                _res[_i] = r
+                                break
+                        st.session_state["resultados"] = _res
+                        st.toast("RNF marcado como copiado", icon=MI_OK)
+                        st.rerun()
+
         st.divider()
 
         #  BLOQUE UDZ DETECTADOS (si hay múltiples) 
@@ -415,10 +440,48 @@ def render_hu_detail(resultados, sprint_activo):
         _exp_label = "Validaciones críticas — " + ("  ·  ".join(_parts) if _parts else "sin datos")
 
         with st.expander(_exp_label, expanded=True):
-            st.markdown(
-                "Verifica la conexión entre **TA** (Text Analyzer — extracción), **AID** (configuración) y **UDZ** (eventos). "
-                "Los tres deben estar alineados para que el flujo funcione en producción."
-            )
+            #  Qué archivo exacto se está evaluando — clave cuando hay varios
+            #  TA/AID/UDZ y se eligió uno en el selector de arriba: sin esto,
+            #  bajando hasta acá no queda claro si lo que se está viendo
+            #  corresponde a la elección que se hizo.
+            _archivos_vista = []
+            for _clave, _color_v in (("TA", "#0369A1"), ("AID", "#7C3AED"), ("UDZ", "#065F46")):
+                _val_arc = arcs_h.get(_clave, "")
+                if "NO" not in _val_arc:
+                    _archivos_vista.append(
+                        f"<span style='display:inline-flex;align-items:center;gap:4px;background:#fff;"
+                        f"border:1.5px solid {_color_v};border-radius:6px;padding:3px 9px;font-size:11.5px;"
+                        f"font-weight:700;color:{_color_v}'>{_clave} <code style='background:none;color:{_color_v};"
+                        f"font-weight:600;padding:0'>{_val_arc}</code></span>"
+                    )
+            if _archivos_vista:
+                st.markdown(
+                    "<div style='margin-bottom:10px'><span style='font-size:11px;font-weight:700;color:#78716C;"
+                    "margin-right:6px'>ESTÁS VIENDO:</span>" + " ".join(_archivos_vista) + "</div>",
+                    unsafe_allow_html=True,
+                )
+
+            _col_desc, _col_refresh_val = st.columns([0.82, 0.18], vertical_alignment="center")
+            with _col_desc:
+                st.markdown(
+                    "Verifica la conexión entre **TA** (Text Analyzer — extracción), **AID** (configuración) y **UDZ** (eventos). "
+                    "Los tres deben estar alineados para que el flujo funcione en producción."
+                )
+            with _col_refresh_val:
+                # Mismo "Actualizar" que el del header, repetido acá para no
+                # tener que subir hasta arriba cada vez que se edita un
+                # archivo y se quiere revalidar.
+                if st.button("Actualizar", key=f"refresh_val_{r.get('hu_id')}", icon=MI_REFRESH, width='stretch',
+                             help="Relee los JSON y recalcula validaciones"):
+                    if hu_folder:
+                        nuevo = analizar_hu(hu_folder)
+                        _res = st.session_state.get("resultados", [])
+                        for _i, _x in enumerate(_res):
+                            if str(_x.get("hu_id")) == str(r.get("hu_id")):
+                                _res[_i] = nuevo
+                                break
+                        st.session_state["resultados"] = _res
+                        st.rerun()
 
             #  Contador visual 
             st.markdown(f"""

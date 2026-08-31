@@ -1,5 +1,5 @@
 """Tarjeta del Excel consolidado y la tabla resumen de HU del sprint."""
-import subprocess
+import os
 from pathlib import Path
 from datetime import datetime
 
@@ -40,7 +40,11 @@ def render_excel_card():
             if st.button("Abrir", key="btn_open_excel", width='stretch', icon=MI_FOLDER,
                          help="Abrir Consolidado_Backlog.xlsx", type="primary"):
                 try:
-                    subprocess.Popen(['start', str(_excel_file)], shell=True)
+                    # os.startfile abre directo con la app asociada (Excel) —
+                    # subprocess con 'start'/shell=True a veces abre la
+                    # ventana de CMD en su lugar, según cómo esté configurado
+                    # el equipo (visto en PC de la empresa).
+                    os.startfile(str(_excel_file))
                 except Exception as ex:
                     st.error(f"No se pudo abrir: {ex}", icon=MI_ERROR)
         else:

@@ -696,7 +696,8 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
     # arriba en _anterior, para no leer el archivo dos veces).
     if _anterior:
         campos_a_conservar = ["aprobado_por", "aprobado_en", "aprobado_estado_code",
-                               "probado_qa_por", "probado_qa_en"]
+                               "probado_qa_por", "probado_qa_en",
+                               "rnf_copiado_por", "rnf_copiado_en"]
         # Trazabilidad de subida a AWS: igual, es un acto explícito por
         # componente (ta/aid/udz), se conserva al re-analizar.
         for _tipo_aws in ("ta", "aid", "udz"):

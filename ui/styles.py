@@ -1,7 +1,57 @@
 """CSS del design system. Se inyecta una sola vez, al arrancar la app."""
+import streamlit.components.v1 as components
 import streamlit as st
 
 from core.config import INK, WHITE, SURFACE, ACCENT, GREEN, PURPLE, ORANGE, RED
+
+
+def inject_scroll_restore():
+    """Streamlit vuelve la página al tope en cada rerun (ej. al elegir otro
+    TA/AID/UDZ en el selector, al aprobar, al subir a AWS) — se siente como
+    que "la página salta" o "se reinicia". Este script recuerda la posición
+    del scroll en sessionStorage del navegador y la restaura después de cada
+    rerun, para que el usuario no pierda el lugar donde estaba mirando.
+
+    Corre dentro de un iframe (así funciona components.html), por eso opera
+    sobre window.parent — es la ventana real de la app, no el iframe. Y el
+    que hace scroll de verdad NO es la ventana (window.scrollY se queda
+    siempre en 0) sino el contenedor interno [data-testid="stMain"] — así
+    que se apunta directo a ese elemento, con window como respaldo por si
+    una versión futura de Streamlit cambia esa estructura."""
+    components.html("""
+    <script>
+    (function() {
+        const KEY = "aid_dealer_scroll_y";
+        function contenedor() {
+            try {
+                return window.parent.document.querySelector('[data-testid="stMain"]') || window.parent;
+            } catch (e) { return null; }
+        }
+        function restaurar() {
+            try {
+                const y = sessionStorage.getItem(KEY);
+                const el = contenedor();
+                if (y !== null && el) { el.scrollTo(0, parseInt(y, 10)); }
+            } catch (e) {}
+        }
+        function guardar() {
+            try {
+                const el = contenedor();
+                if (el) { sessionStorage.setItem(KEY, el.scrollTop || el.scrollY || 0); }
+            } catch (e) {}
+        }
+        // Se reintenta un par de veces: el contenido nuevo puede seguir
+        // creciendo de alto un instante después del primer render.
+        setTimeout(restaurar, 30);
+        setTimeout(restaurar, 150);
+        setTimeout(restaurar, 400);
+        try {
+            const el = contenedor();
+            if (el) { el.addEventListener("scroll", guardar, { passive: true }); }
+        } catch (e) {}
+    })();
+    </script>
+    """, height=0)
 
 
 def inject_css():

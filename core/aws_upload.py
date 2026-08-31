@@ -12,6 +12,7 @@ para que la consola de la UI pueda mostrar el detalle completo de qué pasó.
 """
 import json
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 from .config import AWS_CRED_FILE, AWS_TABLAS
@@ -52,7 +53,11 @@ def subir_componente(tipo: str, archivo: Path, ambiente: str = "qa") -> dict:
     archivo = Path(archivo)
     _log(f"Archivo: {archivo.name}")
     try:
-        item = json.loads(archivo.read_text(encoding="utf-8"))
+        # parse_float=Decimal: DynamoDB (boto3) no acepta el tipo float de
+        # Python para números — solo Decimal. Sin esto, cualquier número con
+        # punto decimal en el JSON (ej. 1.5) tira "Float types are not
+        # supported. Use Decimal types instead." al hacer put_item.
+        item = json.loads(archivo.read_text(encoding="utf-8"), parse_float=Decimal)
         _log(f"JSON válido — {len(item)} campo(s) de primer nivel")
     except Exception as e:
         _log(f"ERROR: el JSON de {archivo.name} no es válido: {e}")

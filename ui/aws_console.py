@@ -15,7 +15,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from core.config import ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, MI_CLOUD, MI_INFO, MI_REFRESH, AWS_TABLAS
+from core.config import ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, MI_CLOUD, MI_INFO, MI_REFRESH, MI_SETTINGS, MI_OK, AWS_TABLAS, AWS_CRED_FILE
 from core.analysis import _val_ok, analizar_hu
 from core.aws_upload import subir_componente
 from core.utils import obtener_usuario_actual
@@ -149,6 +149,45 @@ def _persistir_subida_aws(r: dict, tipo: str, ambiente: str, tabla: str, resulta
     st.session_state["resultados"] = resultados
 
 
+def _render_panel_credenciales():
+    """Formulario para cargar/actualizar aws_credentials.json sin salir de la
+    app ni editar el archivo a mano. Nunca se muestran los valores ya
+    guardados (son secretos) — solo si hay o no credenciales configuradas."""
+    _ruta = Path(AWS_CRED_FILE)
+    _existe = _ruta.exists()
+    _estado_txt = f"{ICON_OK} Configuradas — actualizadas {datetime.fromtimestamp(_ruta.stat().st_mtime).strftime('%d/%m/%Y %H:%M')}" if _existe else f"{ICON_WARNING} No configuradas todavía"
+
+    with st.expander(f"Credenciales AWS — {_estado_txt}", icon=MI_SETTINGS, expanded=not _existe):
+        st.caption(
+            f"Se guardan en `{_ruta.name}` en la raíz del proyecto (nunca se sube a git). "
+            f"Nunca se muestran acá los valores ya guardados, solo si hay algo cargado."
+        )
+        with st.form("form_credenciales_aws", clear_on_submit=False):
+            _access_key = st.text_input("Access Key ID", placeholder="AKIA... o ASIA...")
+            _secret_key = st.text_input("Secret Access Key", type="password")
+            _session_token = st.text_input(
+                "Session Token (solo si son credenciales temporales STS)",
+                type="password",
+                help="Dejalo vacío si es un usuario IAM con access key permanente (ej. cuenta personal).",
+            )
+            _region = st.text_input("Región", value="us-east-1")
+
+            if st.form_submit_button("Guardar credenciales", icon=MI_OK, type="primary"):
+                if not _access_key or not _secret_key or not _region:
+                    st.error("Access Key ID, Secret Access Key y Región son obligatorios.", icon=ICON_ERROR)
+                else:
+                    _creds = {
+                        "aws_access_key_id": _access_key.strip(),
+                        "aws_secret_access_key": _secret_key.strip(),
+                        "region_name": _region.strip(),
+                    }
+                    if _session_token.strip():
+                        _creds["aws_session_token"] = _session_token.strip()
+                    _ruta.write_text(json.dumps(_creds, indent=2, ensure_ascii=False), encoding="utf-8")
+                    st.toast("Credenciales AWS guardadas", icon=MI_OK)
+                    st.rerun()
+
+
 def render_aws_console(resultados):
     st.divider()
     st.markdown("""
@@ -158,6 +197,8 @@ def render_aws_console(resultados):
         El envío es siempre real: si falla la conexión o las credenciales, el log muestra el error tal cual lo da AWS.
     </div>
     """, unsafe_allow_html=True)
+
+    _render_panel_credenciales()
 
     hu_id_activa = st.session_state.get("hu_activa_id")
     r = next((x for x in resultados if str(x.get("hu_id")) == str(hu_id_activa)), None)

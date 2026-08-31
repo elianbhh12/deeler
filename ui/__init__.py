@@ -10,6 +10,7 @@ from core.utils import get_sprints
 
 def run_app():
     styles.inject_css()
+    styles.inject_scroll_restore()
     header.render_header()
 
     sprints_locales = get_sprints()
