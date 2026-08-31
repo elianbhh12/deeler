@@ -275,3 +275,16 @@ def test_despliegue_sin_archivos_queda_incompleto_y_no_12_correctas(appmod, tmp_
     assert n_ok < len(appmod.VALIDATION_KEYS), (
         f"con TA/AID/UDZ faltantes no puede haber {n_ok}/{len(appmod.VALIDATION_KEYS)} validaciones 'correctas'"
     )
+
+
+#  Regresión: cargar_json no debe reventar con una ruta larga/inexistente
+
+def test_cargar_json_ruta_inexistente_no_revienta(appmod, tmp_path):
+    """En Windows, una ruta de más de ~260 caracteres da el mismo error que
+    un archivo inexistente — cargar_json debe manejar ambos casos sin tirar
+    una excepción, devolviendo None."""
+    corta = tmp_path / "no_existe.json"
+    assert appmod.cargar_json(corta) is None
+
+    ruta_larga = tmp_path / ("x" * 250 + ".json")
+    assert appmod.cargar_json(ruta_larga) is None

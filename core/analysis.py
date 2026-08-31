@@ -93,6 +93,22 @@ def cargar_json(path: Path):
     except json.JSONDecodeError as e:
         st.warning(f"JSON inválido en `{path.name}`: {e}", icon=MI_WARNING)
         return None
+    except (FileNotFoundError, OSError) as e:
+        # En Windows, una ruta completa de más de ~260 caracteres da el mismo
+        # "No such file or directory" que un archivo realmente inexistente —
+        # aunque el archivo se vea perfecto en el Explorador. Si la ruta es
+        # sospechosamente larga, se avisa explícitamente en vez de dejar
+        # pensar que el archivo desapareció.
+        if len(str(path)) > 240:
+            st.warning(
+                f"No se pudo abrir `{path.name}` — la ruta completa tiene {len(str(path))} caracteres "
+                f"(límite de Windows: 260). Acortá ROOT_FOLDER en el .env para que la ruta completa "
+                f"quede por debajo del límite.",
+                icon=MI_WARNING,
+            )
+        else:
+            st.warning(f"Error leyendo `{path.name}`: {e}", icon=MI_WARNING)
+        return None
     except Exception as e:
         st.warning(f"Error leyendo `{path.name}`: {e}", icon=MI_WARNING)
         return None
