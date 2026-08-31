@@ -95,13 +95,13 @@ def descargar_hu(iteration_path: str):
         log_error(f"Error descargando detalles: {e}")
         return 0
 
-    # max_len acotado en el nombre de carpeta del sprint y de la HU (abajo,
-    # en hu_folder) para dejar margen dentro del límite clásico de Windows de
-    # 260 caracteres por ruta completa — con nombres de área/HU muy largos
-    # (común en organizaciones grandes), sumado a ROOT_FOLDER + adjuntos +
-    # nombre de archivo, se puede pasar del límite y Python falla con
-    # "No such file or directory" aunque el archivo exista de verdad.
-    sprint_folder = Path(ROOT_FOLDER) / safe_name(iteration_path.replace("\\", "_"), 40)
+    # La carpeta del sprint es solo el último segmento del iteration_path
+    # (ej. "Sprint 252"), no el área completa — más corto (deja margen para
+    # el límite de 260 caracteres de Windows), más legible, y el nombre
+    # completo de cada HU ya va en su propia carpeta adentro.
+    _partes_iter = [p for p in iteration_path.split("\\") if p]
+    _nombre_sprint_folder = safe_name(_partes_iter[-1]) if _partes_iter else "sprint"
+    sprint_folder = Path(ROOT_FOLDER) / _nombre_sprint_folder
     sprint_folder.mkdir(parents=True, exist_ok=True)
 
     # IDs ya descargados — evitar re-descarga
