@@ -126,6 +126,15 @@ def descargar_hu(iteration_path: str):
     progress_bar = st.progress(0)
     status_text  = st.empty()
 
+    # Cuánto título de HU entra sin pasarse del límite de 260 caracteres de
+    # Windows: se calcula según el ROOT_FOLDER real (no un número fijo
+    # adivinado) — así en un ROOT_FOLDER corto el título sale casi completo,
+    # y solo se recorta lo justo y necesario cuando el ROOT_FOLDER es largo.
+    # Reserva: "\adjuntos\" (10) + nombre de archivo hasta 120 (el máximo que
+    # ya permite safe_name para adjuntos) + "wid-" al principio (~10).
+    _margen_archivo = 10 + 120 + 10
+    _max_len_titulo = max(20, min(100, 260 - len(str(sprint_folder)) - _margen_archivo))
+
     sin_asignar = []  # HU sin asignar para notificar al final
     errores_zip = []  # ZIPs que no se pudieron descomprimir — el log_container
                        # es compartido y se pisa entre attachments, así que
@@ -146,7 +155,7 @@ def descargar_hu(iteration_path: str):
         progress_bar.progress(idx / len(nuevos))
         status_text.info(f"Descargando {idx}/{len(nuevos)}: {title[:50]}...")
 
-        hu_folder  = sprint_folder / f"{wid}-{safe_name(title, 35)}"
+        hu_folder  = sprint_folder / f"{wid}-{safe_name(title, _max_len_titulo)}"
         adj_folder = hu_folder / "adjuntos"
         for p in [hu_folder, adj_folder, hu_folder/"analisis", hu_folder/"evidencia"]:
             p.mkdir(parents=True, exist_ok=True)
