@@ -50,7 +50,7 @@ def inject_scroll_restore():
         } catch (e) {}
     })();
     </script>
-    """, height=0)
+    """, height=1)
 
 
 def inject_css():
