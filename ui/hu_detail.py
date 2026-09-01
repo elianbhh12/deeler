@@ -62,12 +62,25 @@ def render_hu_detail(resultados, sprint_activo):
     # ícono hace que la opción anterior ya no exista en la lista nueva y
     # Streamlit vuelve en silencio a la primera HU de la lista.
     hu_por_id = {r.get("hu_id"): r for r in resultados}
+
+    # Red de seguridad extra: además de la persistencia normal de Streamlit
+    # (vía key="hu_select"), se guarda la elección en una copia aparte
+    # ("_hu_select_shadow") y se restaura ACÁ, antes de crear el widget, si
+    # por lo que sea "hu_select" no está o quedó apuntando a una HU que ya
+    # no existe — esto cubre el caso reportado de que la selección salta a
+    # la primera HU después de ciertas acciones (guardar credenciales AWS,
+    # subir un componente) sin depender de encontrar la causa exacta.
+    _shadow = st.session_state.get("_hu_select_shadow")
+    if _shadow in hu_por_id and st.session_state.get("hu_select") not in hu_por_id:
+        st.session_state["hu_select"] = _shadow
+
     seleccion_id = st.selectbox(
         "Selecciona una HU para ver detalles",
         list(hu_por_id.keys()),
         format_func=lambda hid: _hu_label(hu_por_id[hid]),
         key="hu_select",
     )
+    st.session_state["_hu_select_shadow"] = seleccion_id
 
     if seleccion_id is not None:
         r   = hu_por_id[seleccion_id]
