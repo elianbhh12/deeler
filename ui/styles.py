@@ -959,22 +959,77 @@ section[data-testid="stSidebar"] .stInfo {{
  word-break: break-all;
 }}
 
+.aws-console-wrap {{
+ border-radius: 12px;
+ overflow: hidden;
+ box-shadow: var(--shadow-md);
+ border: 1px solid #000;
+}}
+
+.aws-console-bar {{
+ background: #2B2B2B;
+ padding: 9px 14px;
+ display: flex;
+ align-items: center;
+ gap: 6px;
+}}
+
+.aws-console-dot {{ width: 10px; height: 10px; border-radius: 50%; display: inline-block; }}
+.aws-console-dot.red    {{ background: #FF5F56; }}
+.aws-console-dot.yellow {{ background: #FFBD2E; }}
+.aws-console-dot.green  {{ background: #27C93F; }}
+
+.aws-console-bar-label {{
+ margin-left: 8px;
+ font-size: 11px;
+ font-weight: 600;
+ letter-spacing: .02em;
+ color: #9CA3AF;
+ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}}
+
 .aws-console {{
  background: #1E1E1E;
- border-radius: 10px;
- padding: 14px 16px;
- max-height: 340px;
+ padding: 18px 20px;
+ max-height: 480px;
+ min-height: 140px;
  overflow-y: auto;
  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
- font-size: 12px;
- line-height: 1.65;
- box-shadow: var(--shadow-sm);
+ font-size: 12.5px;
+ line-height: 1.9;
+}}
+
+.aws-console-ts {{
+ color: #6B7280;
+ margin-right: 10px;
+ font-size: 11px;
+}}
+
+.aws-console-icon {{
+ display: inline-block;
+ width: 16px;
+ margin-right: 4px;
+ font-weight: 700;
+ text-align: center;
 }}
 
 .aws-console-line {{ color: #D4D4D4; white-space: pre-wrap; word-break: break-all; }}
 .aws-console-line.err  {{ color: #F87171; font-weight: 600; }}
+.aws-console-line.err  .aws-console-icon {{ color: #F87171; }}
 .aws-console-line.warn {{ color: #FBBF24; font-weight: 600; }}
+.aws-console-line.warn .aws-console-icon {{ color: #FBBF24; }}
 .aws-console-line.ok   {{ color: #4ADE80; font-weight: 600; }}
+.aws-console-line.ok   .aws-console-icon {{ color: #4ADE80; }}
+.aws-console-line.sep  {{
+ color: #E5E7EB;
+ font-weight: 700;
+ font-size: 11px;
+ letter-spacing: .03em;
+ text-transform: uppercase;
+ margin: 10px 0 6px;
+ padding-bottom: 6px;
+ border-bottom: 1px solid #3F3F3F;
+}}
 .aws-console-empty {{ color: #6B7280; font-style: italic; }}
 
 .aws-alert {{
@@ -993,6 +1048,52 @@ section[data-testid="stSidebar"] .stInfo {{
  padding: 1px 5px;
  border-radius: 4px;
  font-size: 10.5px;
+}}
+
+.aws-chip {{
+ display: inline-block;
+ background: #D1FAE5;
+ border: 1px solid #6EE7B7;
+ border-radius: 999px;
+ padding: 3px 9px;
+ font-size: 10.5px;
+ font-weight: 600;
+ color: #065F46;
+ margin-top: 6px;
+}}
+
+.aws-chip b {{ font-weight: 800; }}
+
+.aws-summary-strip {{
+ display: flex;
+ align-items: center;
+ justify-content: space-between;
+ flex-wrap: wrap;
+ gap: 10px;
+ background: white;
+ border: 1px solid var(--line);
+ border-radius: 12px;
+ padding: 10px 16px;
+ margin-bottom: 12px;
+ box-shadow: var(--shadow-sm);
+}}
+
+.aws-summary-text {{
+ font-size: 13px;
+ font-weight: 700;
+ color: var(--ink);
+}}
+
+/*  Vista coloreada del resumen para Resolution de ADO — el color de cada
+    línea va en línea (style="...") directo en ui/hu_detail.py, no acá, para
+    que sobreviva al copiar y pegar (ver _RESUMEN_COLORES). Acá solo el
+    contenedor. */
+.resumen-res-card {{
+ background: var(--track);
+ border: 1px solid var(--line);
+ border-radius: 10px;
+ padding: 12px 16px;
+ margin-bottom: 10px;
 }}
 
 </style>

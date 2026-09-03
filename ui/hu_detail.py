@@ -9,6 +9,7 @@ para navegar sin ganar claridad real.
 """
 import re
 import json
+import html
 from pathlib import Path
 from datetime import datetime
 
@@ -17,15 +18,140 @@ import streamlit as st
 from core.config import (
     ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, ESTADO_ICON, ESTADO_LISTO, ESTADO_ERROR,
     KAFKA_TOPIC_REQUERIDO, ROOT_FOLDER, VALIDATION_KEYS, AID_TYPE_VALIDOS,
-    MI_APPROVE, MI_ERROR, MI_FILE, MI_GUIDE, MI_INFO, MI_OK, MI_REFRESH, MI_WARNING,
+    MI_APPROVE, MI_ERROR, MI_FILE, MI_GUIDE, MI_INFO, MI_OK, MI_REFRESH, MI_WARNING, MI_SUMMARY,
 )
-from core.analysis import get_estado_code, cargar_json, clasificar_udz_desde_json, normalizar_s3, _val_ok, analizar_hu
+from core.analysis import get_estado_code, cargar_json, clasificar_udz_desde_json, normalizar_s3, _val_ok, analizar_hu, detectar_slots_udz
 from core.utils import abrir_archivo, obtener_usuario_actual
 from core.guide import mostrar_guia_tipo
 
 
+def _generar_resumen_resolution(r: dict) -> tuple:
+    """Texto para copiar al Resolution de la HU en ADO, con el estado real
+    del flujo (QA, AWS, PDN). Un componente sin archivo en esta HU se marca
+    "no aplica", no "no subido". Devuelve (texto, completo)."""
+    estado_code = get_estado_code(r)
+    estado_txt = {ESTADO_LISTO: "LISTO", ESTADO_ERROR: "CON ERRORES"}.get(estado_code, "INCOMPLETO")
+
+    lineas = [
+        f"HU {r.get('hu_id', '?')} — {r.get('hu_title', '')}",
+        f"Estado de Flujo: {estado_txt}",
+        "",
+    ]
+
+    # Un solo cálculo de slots UDZ, reusado acá (referencia técnica) y más
+    # abajo (checklist) — si hay crudos y resultados como archivos separados,
+    # cada uno tiene su propio s3_path y no alcanza con mostrar uno solo.
+    _slots_udz = detectar_slots_udz(r)
+
+    # Solo relevantes al cerrar en PDN, no durante pruebas en QA.
+    _val = r.get("validaciones", {})
+    _ambiente = (_val.get("ambiente", {}).get("ambiente") or "").upper()
+    if _ambiente == "PDN":
+        _cu_name = _val.get("ta_cu_name", {}).get("cu_name") or ""
+        _aid_s3  = _val.get("s3_path", {}).get("aid") or ""
+        _hay_ref = bool(_cu_name or _aid_s3)
+        if _cu_name:
+            lineas.append(f"🔗 TA cu_name: {_cu_name}")
+        if _aid_s3:
+            lineas.append(f"🔗 AID s3_path: {_aid_s3}")
+        if len(_slots_udz) == 1:
+            _udz_s3 = _val.get("s3_path", {}).get("udz") or ""
+            if _udz_s3:
+                lineas.append(f"🔗 UDZ s3_path: {_udz_s3}")
+                _hay_ref = True
+        else:
+            # Solo el UDZ activo pasa por las validaciones — para el otro se
+            # lee el s3_path directo del archivo, sin pasar por "val".
+            _nombres_s3 = {"CRUDOS": "Crudos", "RESULTADOS": "Transmisión"}
+            for _s in _slots_udz:
+                _data = cargar_json(Path(_s["archivo"])) if _s["archivo"] else None
+                _item = _data.get("item", _data) if isinstance(_data, dict) else {}
+                _path = _item.get("s3_path", "") if isinstance(_item, dict) else ""
+                if _path:
+                    _nombre = _nombres_s3.get(_s["tipo"], _s["tipo"] or "?")
+                    lineas.append(f"🔗 UDZ s3_path ({_nombre}): {_path}")
+                    _hay_ref = True
+        if _hay_ref:
+            lineas.append("")
+
+    _qa_por = r.get("probado_qa_por")
+    if _qa_por:
+        _qa_en = (r.get("probado_qa_en") or "")[:16].replace("T", " ")
+        lineas.append(f"✅ Probado en QA — {_qa_por} — {_qa_en}")
+    else:
+        lineas.append("❌ No se registró prueba en QA")
+
+    def _linea_aws(clave, nombre, hay_archivo):
+        if not hay_archivo:
+            lineas.append(f"➖ {nombre} no aplica en esta HU")
+            return
+        _por = r.get(f"{clave}_aws_por")
+        if _por:
+            _amb = (r.get(f"{clave}_aws_ambiente") or "").upper()
+            _en = (r.get(f"{clave}_aws_en") or "")[:16].replace("T", " ")
+            lineas.append(f"✅ {nombre} subido a {_amb} — {_por} — {_en}")
+        else:
+            lineas.append(f"❌ {nombre} no subido a AWS")
+
+    _linea_aws("ta", "TA", bool(r.get("ta_activo")))
+    _linea_aws("aid", "AID", bool(r.get("aid_activo")))
+
+    if len(_slots_udz) == 1:
+        _s = _slots_udz[0]
+        _sub = f" ({_s['tipo']})" if _s["tipo"] else ""
+        _linea_aws("udz", f"UDZ{_sub}", bool(_s["archivo"]))
+    else:
+        _nombres = {"CRUDOS": "UDZ Crudos (entrada)", "RESULTADOS": "UDZ Transmisión (salida)"}
+        for _s in _slots_udz:
+            _linea_aws(f"udz_{_s['tipo'].lower()}", _nombres.get(_s["tipo"], "UDZ"), True)
+
+    lineas.append("")
+    _desp_por = r.get("desplegado_pdn_por")
+    if _desp_por:
+        _desp_en = (r.get("desplegado_pdn_en") or "")[:16].replace("T", " ")
+        lineas.append(f"✅ Desplegado en PDN 🚀 — {_desp_por} — {_desp_en}")
+    else:
+        lineas.append("❌ Todavía no se marcó como desplegado en PDN")
+
+    completo = not any(l.startswith("❌") for l in lineas)
+    return "\n".join(lineas), completo
+
+
+# Colores en línea (no clase CSS): al copiar HTML seleccionado del navegador
+# solo viaja el style="..." puesto directo en el elemento, no la hoja de
+# estilos — sin esto se pegaba todo en negro.
+_RESUMEN_COLORES = {"ok": "#065F46", "err": "#991B1B", "na": "#78716C"}
+
+
+def _render_resumen_coloreado(texto: str):
+    """Vista con color por línea del resumen (ver _RESUMEN_COLORES)."""
+    filas = []
+    for linea in texto.split("\n"):
+        if not linea:
+            filas.append('<div style="height:6px"></div>')
+        elif linea[0] in ("✅", "❌", "➖"):
+            cls = {"✅": "ok", "❌": "err", "➖": "na"}[linea[0]]
+            color_txt = _RESUMEN_COLORES[cls]
+            # Sin display:flex: al pegar en ADO, un div flex con spans
+            # sueltos se desarma y el ícono queda en su propia línea.
+            filas.append(
+                f'<div style="font-size:12.5px;line-height:1.5;padding:2px 0;color:{color_txt}">'
+                f'{linea[0]} {html.escape(linea[1:].strip())}</div>'
+            )
+        elif linea.startswith("HU "):
+            filas.append(f'<div style="font-weight:800;font-size:13.5px;color:#2C2A29">{html.escape(linea)}</div>')
+        elif linea.startswith("🔗"):
+            # Datos técnicos de referencia (solo aparecen en PDN).
+            filas.append(
+                f'<div style="font-size:12px;color:#1D4ED8;font-family:ui-monospace,SFMono-Regular,'
+                f'Menlo,Consolas,monospace;word-break:break-all;margin-bottom:3px">{html.escape(linea)}</div>'
+            )
+        else:
+            filas.append(f'<div style="font-size:12px;color:#78716C;margin-bottom:4px">{html.escape(linea)}</div>')
+    st.markdown(f'<div class="resumen-res-card">{"".join(filas)}</div>', unsafe_allow_html=True)
+
+
 def render_hu_detail(resultados, sprint_activo):
-    #  Detalle técnico CON ACORDEONES 
     _last_analyzed = st.session_state.get("_last_analyzed", "")
     _sprint_label  = sprint_activo.split("_")[-1] if sprint_activo else ""
     _snum_match    = re.search(r"Sprint\s*(\d+)", sprint_activo, re.IGNORECASE)
@@ -46,9 +172,8 @@ def render_hu_detail(resultados, sprint_activo):
 
     def _hu_label(r):
         _id    = r.get('hu_id', '?')
-        _title = r.get('hu_title', '')  # sin recortar: así la búsqueda del selectbox
-                                          # encuentra cualquier palabra del título completo
-        _tipo  = r.get('tipo_cambio', '')[:4]  # DESP / MODI
+        _title = r.get('hu_title', '')  # sin recortar: la búsqueda del selectbox necesita el título completo
+        _tipo  = r.get('tipo_cambio', '')[:4]
         _icon  = ESTADO_ICON.get(get_estado_code(r), ICON_WARNING)
         return f"{_icon} {_id} — {_title} [{_tipo}]"
 
@@ -56,20 +181,16 @@ def render_hu_detail(resultados, sprint_activo):
         st.warning("No hay HU para mostrar con los filtros seleccionados")
         st.stop()
 
-    # El selectbox persiste el hu_id (estable) como valor, no el label
-    # armado (que trae un ícono de estado que puede cambiar al re-analizar,
-    # ej. al elegir otro TA/AID/UDZ) — si persistiera el label, un cambio de
-    # ícono hace que la opción anterior ya no exista en la lista nueva y
-    # Streamlit vuelve en silencio a la primera HU de la lista.
+    # El selectbox persiste el hu_id como valor, no el label armado (que
+    # trae un ícono de estado que puede cambiar al re-analizar) — si
+    # persistiera el label, un cambio de ícono deja la opción anterior fuera
+    # de la lista nueva y Streamlit vuelve en silencio a la primera HU.
     hu_por_id = {r.get("hu_id"): r for r in resultados}
 
-    # Red de seguridad extra: además de la persistencia normal de Streamlit
-    # (vía key="hu_select"), se guarda la elección en una copia aparte
-    # ("_hu_select_shadow") y se restaura ACÁ, antes de crear el widget, si
-    # por lo que sea "hu_select" no está o quedó apuntando a una HU que ya
-    # no existe — esto cubre el caso reportado de que la selección salta a
-    # la primera HU después de ciertas acciones (guardar credenciales AWS,
-    # subir un componente) sin depender de encontrar la causa exacta.
+    # Red de seguridad extra ante el caso reportado de que la selección
+    # salta a la primera HU tras ciertas acciones (guardar credenciales AWS,
+    # subir un componente): se guarda la elección en "_hu_select_shadow" y
+    # se restaura acá si "hu_select" no está o apunta a una HU que ya no existe.
     _shadow = st.session_state.get("_hu_select_shadow")
     if _shadow in hu_por_id and st.session_state.get("hu_select") not in hu_por_id:
         st.session_state["hu_select"] = _shadow
@@ -85,12 +206,9 @@ def render_hu_detail(resultados, sprint_activo):
     if seleccion_id is not None:
         r   = hu_por_id[seleccion_id]
         val = r.get("validaciones", {})
-        #  La HU activa se guarda acá para que la consola de "Subir a AWS QA"
-        #  (sección aparte, más abajo en la página) sepa a cuál referirse sin
-        #  duplicar el selector.
+        # La consola "Subir a AWS" (más abajo) usa esto para saber a qué HU referirse.
         st.session_state["hu_activa_id"] = r.get("hu_id")
 
-        # Obtener hu_folder para el botn de abrir carpeta
         sprint_path = Path(ROOT_FOLDER) / sprint_activo
         hu_folder = None
         hu_id_str = str(r.get("hu_id", ""))
@@ -99,11 +217,12 @@ def render_hu_detail(resultados, sprint_activo):
             for d in sprint_path.iterdir():
                 if not d.is_dir():
                     continue
-                if d.name.startswith(hu_id_str):
+                # "-" al final es obligatorio: sin esto, HU "100" matcheaba
+                # por error la carpeta "1002-..." (prefijo numérico de otro ID).
+                if d.name.startswith(f"{hu_id_str}-"):
                     hu_folder = d
                     break
 
-        #  Selector de TA/AID/UDZ cuando hay varios en adjuntos
         _ta_files  = r.get("ta_files", [])
         _aid_files = r.get("aid_files", [])
         _udz_files = r.get("udz_files", [])
@@ -112,10 +231,6 @@ def render_hu_detail(resultados, sprint_activo):
                 f"<div class='step-card-help'>{ICON_WARNING} Esta HU trae varios archivos TA, AID y/o UDZ en adjuntos — elegí cuál usar para el análisis</div>",
                 unsafe_allow_html=True,
             )
-            #  Icono coloreado según el resultado que da la combinación TA/AID/UDZ
-            #  activa hoy: verde = LISTO, rojo = con errores, naranja = incompleto.
-            #  Así el usuario ve de un vistazo si lo que eligió quedó bien o mal,
-            #  sin tener que bajar a leer las tarjetas de validación.
             _estado_code_sel = get_estado_code(r)
             if _estado_code_sel == ESTADO_LISTO:
                 _sel_icon, _sel_color = ICON_OK, "#15803D"
@@ -184,7 +299,6 @@ def render_hu_detail(resultados, sprint_activo):
                 st.session_state["resultados"] = _res
                 st.rerun()
 
-        #  Header de HU seleccionada
         arcs_h = r.get("archivos", {})
         amb_h  = r.get("validaciones", {}).get("ambiente", {}).get("ambiente", "?")
         tipo_h = r.get("tipo_cambio", "?")
@@ -226,53 +340,39 @@ def render_hu_detail(resultados, sprint_activo):
                     st.session_state["resultados"] = _res
                     st.rerun()
 
-        #  Trazabilidad y aprobación para PDN
+        # Único paso de confirmación manual antes del despliegue — no hay
+        # "aprobado" separado, el mismo usuario que ejecuta el flujo confirma.
         _analizado_por     = r.get("analizado_por")
         _analizado_en_fmt  = r.get("analizado_en", "")[:16].replace("T", " ")
-        _aprobado_por      = r.get("aprobado_por")
-        _aprobado_en_fmt   = r.get("aprobado_en", "")[:16].replace("T", " ")
-        _aprobado_estado   = r.get("aprobado_estado_code")
+        _qa_por            = r.get("probado_qa_por")
+        _qa_en_fmt         = r.get("probado_qa_en", "")[:16].replace("T", " ")
+        _qa_estado         = r.get("probado_qa_estado_code")
         _estado_code_hoy   = get_estado_code(r)
 
         if _analizado_por:
             st.caption(f"Último análisis: {_analizado_por} — {_analizado_en_fmt}")
 
-        _aprobacion_vigente = bool(_aprobado_por) and _aprobado_estado == _estado_code_hoy == ESTADO_LISTO
+        _qa_vigente = bool(_qa_por) and _qa_estado == _estado_code_hoy == ESTADO_LISTO
 
-        if _aprobado_por and not _aprobacion_vigente:
+        if _qa_por and not _qa_vigente:
             st.warning(
-                f"Se aprobó por {_aprobado_por} el {_aprobado_en_fmt}, pero el análisis cambió desde entonces — revisar antes de confiar en esta aprobación",
+                f"Se probó en QA por {_qa_por} el {_qa_en_fmt}, pero el análisis cambió desde entonces — revisar antes de confiar en esta prueba",
                 icon=MI_WARNING,
             )
 
-        if _aprobacion_vigente:
-            _qa_por = r.get("probado_qa_por")
-            _qa_en_fmt = r.get("probado_qa_en", "")[:16].replace("T", " ")
-            _qa_txt = f" · Probado en QA por {_qa_por} — {_qa_en_fmt}" if _qa_por else ""
-            st.success(f"Aprobado para PDN por {_aprobado_por} — {_aprobado_en_fmt}{_qa_txt}", icon=MI_APPROVE)
+        if _qa_vigente:
+            st.success(f"Probado en QA por {_qa_por} — {_qa_en_fmt}", icon=MI_APPROVE)
         else:
-            _puede_aprobar = _estado_code_hoy == ESTADO_LISTO
-            _qa_confirmado = False
-            if _puede_aprobar:
-                # Checklist obligatorio: nunca se aprueba para PDN sin confirmar
-                # antes que se probó en QA — se pide de nuevo en cada sesión,
-                # a propósito (no se recuerda marcado de una aprobación anterior).
-                _qa_confirmado = st.checkbox(
-                    "Confirmo que esta HU se probó en QA antes de subir a PDN",
-                    key=f"qa_check_{r.get('hu_id')}",
-                )
-            if st.button("Marcar como aprobado para PDN", key=f"aprobar_{r.get('hu_id')}", width='stretch',
-                         icon=MI_APPROVE, disabled=not (_puede_aprobar and _qa_confirmado),
-                         help=("Solo se puede aprobar si el estado actual es LISTO" if not _puede_aprobar
-                               else "Marcá primero el checklist de QA" if not _qa_confirmado else None)):
+            _puede_marcar_qa = _estado_code_hoy == ESTADO_LISTO
+            if st.button("Marcar como probado en QA", key=f"qa_{r.get('hu_id')}", width='stretch',
+                         icon=MI_APPROVE, disabled=not _puede_marcar_qa,
+                         help=None if _puede_marcar_qa else "Solo se puede marcar si el estado actual es LISTO"):
                 if hu_folder:
                     _ahora = datetime.now().isoformat()
                     _usuario = obtener_usuario_actual()
-                    r["aprobado_por"] = _usuario
-                    r["aprobado_en"] = _ahora
-                    r["aprobado_estado_code"] = _estado_code_hoy
                     r["probado_qa_por"] = _usuario
                     r["probado_qa_en"] = _ahora
+                    r["probado_qa_estado_code"] = _estado_code_hoy
                     out_path = hu_folder / "analisis" / "analisis_tecnico.json"
                     out_path.write_text(json.dumps(r, indent=2, ensure_ascii=False), encoding="utf-8")
                     _res = st.session_state.get("resultados", [])
@@ -281,12 +381,45 @@ def render_hu_detail(resultados, sprint_activo):
                             _res[_i] = r
                             break
                     st.session_state["resultados"] = _res
-                    # st.toast (no st.success) porque el rerun de abajo borra
-                    # cualquier mensaje inline antes de que llegue a mostrarse.
-                    st.toast("Aprobación registrada", icon=MI_OK)
+                    # st.toast (no st.success): el rerun de abajo borra mensajes inline.
+                    st.toast("QA registrado", icon=MI_OK)
                     st.rerun()
 
-        #  SECCIÓN DE RNF
+        # Hecho histórico (una vez desplegado, queda desplegado) — solo se
+        # puede marcar mientras la prueba en QA esté vigente.
+        _desplegado_pdn_por = r.get("desplegado_pdn_por")
+        if _desplegado_pdn_por:
+            _desplegado_pdn_en_fmt = (r.get("desplegado_pdn_en") or "")[:16].replace("T", " ")
+            st.success(f"Desplegado en PDN por {_desplegado_pdn_por} — {_desplegado_pdn_en_fmt}", icon=MI_APPROVE)
+        elif _qa_vigente:
+            _pdn_deploy_confirmado = st.checkbox(
+                "Confirmo que esta HU ya se desplegó en PDN",
+                key=f"pdn_deploy_check_{r.get('hu_id')}",
+            )
+            if st.button("Marcar como desplegado en PDN", key=f"desplegar_pdn_{r.get('hu_id')}", width='stretch',
+                         icon=MI_APPROVE, disabled=not _pdn_deploy_confirmado,
+                         help=None if _pdn_deploy_confirmado else "Marcá primero la confirmación"):
+                if hu_folder:
+                    _ahora = datetime.now().isoformat()
+                    _usuario = obtener_usuario_actual()
+                    r["desplegado_pdn_por"] = _usuario
+                    r["desplegado_pdn_en"] = _ahora
+                    out_path = hu_folder / "analisis" / "analisis_tecnico.json"
+                    out_path.write_text(json.dumps(r, indent=2, ensure_ascii=False), encoding="utf-8")
+                    _res = st.session_state.get("resultados", [])
+                    for _i, _x in enumerate(_res):
+                        if str(_x.get("hu_id")) == str(r.get("hu_id")):
+                            _res[_i] = r
+                            break
+                    st.session_state["resultados"] = _res
+                    st.toast("Despliegue en PDN registrado", icon=MI_OK)
+                    st.rerun()
+
+        _texto_resumen, _completo_resumen = _generar_resumen_resolution(r)
+
+        with st.expander("Resumen para Resolution de ADO", expanded=False, icon=MI_OK if _completo_resumen else MI_SUMMARY):
+            _render_resumen_coloreado(_texto_resumen)
+
         rnf_path_str = r.get("rnf_path")
         rnf_path = Path(rnf_path_str) if rnf_path_str else None
 
@@ -319,9 +452,6 @@ def render_hu_detail(resultados, sprint_activo):
             else:
                 st.button("RNF no disponible", disabled=True, key=f"btn_rnf_dis_{r.get('hu_id')}", width='stretch')
 
-        #  Trazabilidad: confirmar que el RNF ya se copió al Excel/consolidado
-        #  del área — acto explícito del usuario, igual que QA/aprobación, se
-        #  guarda en analisis_tecnico.json (no solo en esta sesión).
         if rnf_path:
             _rnf_copiado_por = r.get("rnf_copiado_por")
             if _rnf_copiado_por:
@@ -346,7 +476,6 @@ def render_hu_detail(resultados, sprint_activo):
 
         st.divider()
 
-        #  BLOQUE UDZ DETECTADOS (si hay múltiples) 
         udz_files_raw = r.get("udz_files", []) if isinstance(r.get("udz_files"), list) else []
         udz_files = [Path(p) if isinstance(p, str) else p for p in udz_files_raw]
         if udz_files and len(udz_files) > 1:
@@ -378,7 +507,6 @@ def render_hu_detail(resultados, sprint_activo):
                     """, unsafe_allow_html=True)
             st.divider()
 
-        #  Alerta de archivos con nombre genérico (visible siempre) 
         _configs_alerta = r.get("configs_sin_tipo", [])
         if _configs_alerta:
             for cfg in _configs_alerta:
@@ -409,21 +537,17 @@ def render_hu_detail(resultados, sprint_activo):
                     </div>
                     """, unsafe_allow_html=True)
 
-        #  P0: GUÍA CONTEXTUALIZADA 
         with st.expander("GUÍA: Cómo Analizar Esta HU", expanded=False, icon=MI_GUIDE):
             guia = mostrar_guia_tipo(r.get("tipo_cambio", "DESPLIEGUE"))
             st.markdown(guia)
 
         st.divider()
 
-        #  Validaciones críticas 
-        # Nombres de archivo detectados
         _arcs    = r.get("archivos", {})
         _f_ta    = _arcs.get("TA",  "TA")
         _f_aid   = _arcs.get("AID", "AID")
         _f_udz   = _arcs.get("UDZ", "UDZ")
 
-        # Pre-calcular todos los estados
         s3_info  = val.get("s3_path", {});          s3_ok  = s3_info.get("ok", False);   s3_na  = s3_info.get("na", False)
         wf_info  = val.get("workflow_vs_id", {});   wf_ok  = wf_info.get("ok", False);   wf_na  = wf_info.get("na", False)
         kf_info  = val.get("kafka", {});            kf_ok  = kf_info.get("ok", False);   kf_na  = kf_info.get("na", False)
@@ -439,13 +563,11 @@ def render_hu_detail(resultados, sprint_activo):
         amb_wf_info = val.get("ambiente_workflow_id", {}); amb_wf_ok = amb_wf_info.get("ok", False); amb_wf_na = amb_wf_info.get("na", False)
         udz_tx_info = val.get("udz_transmisiones", {});   udz_tx_ok = udz_tx_info.get("ok", False); udz_tx_na = udz_tx_info.get("na", False)
 
-        # Conteo robusto: recorre la misma lista canónica de claves que usa analizar_hu,
-        # así el resumen nunca puede desincronizarse de la lógica real de estado_code.
+        # Misma lista canónica de claves que usa analizar_hu, así no se desincroniza de estado_code.
         n_na  = sum(1 for k in VALIDATION_KEYS if val.get(k, {}).get("na", False))
         n_ok  = sum(1 for k in VALIDATION_KEYS if not val.get(k, {}).get("na", False) and _val_ok(val.get(k, {})))
         n_err = len(VALIDATION_KEYS) - n_na - n_ok
 
-        # Título del expander — solo muestra N/A si hay alguno
         _parts = []
         if n_ok:  _parts.append(f"{ICON_OK} {n_ok} correctas")
         if n_err: _parts.append(f"{ICON_ERROR} {n_err} con error")
@@ -453,10 +575,7 @@ def render_hu_detail(resultados, sprint_activo):
         _exp_label = "Validaciones críticas — " + ("  ·  ".join(_parts) if _parts else "sin datos")
 
         with st.expander(_exp_label, expanded=True):
-            #  Qué archivo exacto se está evaluando — clave cuando hay varios
-            #  TA/AID/UDZ y se eligió uno en el selector de arriba: sin esto,
-            #  bajando hasta acá no queda claro si lo que se está viendo
-            #  corresponde a la elección que se hizo.
+            # Qué archivo exacto se está evaluando — clave cuando hay varios TA/AID/UDZ.
             _archivos_vista = []
             for _clave, _color_v in (("TA", "#0369A1"), ("AID", "#7C3AED"), ("UDZ", "#065F46")):
                 _val_arc = arcs_h.get(_clave, "")
@@ -481,9 +600,7 @@ def render_hu_detail(resultados, sprint_activo):
                     "Los tres deben estar alineados para que el flujo funcione en producción."
                 )
             with _col_refresh_val:
-                # Mismo "Actualizar" que el del header, repetido acá para no
-                # tener que subir hasta arriba cada vez que se edita un
-                # archivo y se quiere revalidar.
+                # Repetido acá para no tener que subir hasta el header a cada rato.
                 if st.button("Actualizar", key=f"refresh_val_{r.get('hu_id')}", icon=MI_REFRESH, width='stretch',
                              help="Relee los JSON y recalcula validaciones"):
                     if hu_folder:
@@ -496,7 +613,6 @@ def render_hu_detail(resultados, sprint_activo):
                         st.session_state["resultados"] = _res
                         st.rerun()
 
-            #  Contador visual 
             st.markdown(f"""
             <div class="val-summary">
                 <div class="val-summary-item">
@@ -515,7 +631,6 @@ def render_hu_detail(resultados, sprint_activo):
                 """Encabezado de grupo: agrupa las tarjetas por dónde hay que mirar (TA/AID/UDZ/cruzadas)."""
                 st.markdown(f"<div class='val-group-title'>{nombre}</div>", unsafe_allow_html=True)
 
-            #  Helper inline para renderizar cada card
             def val_card(estado, titulo, archivo, regla, detalle_fn, na=False, campo=None, valor_ok=None):
                 if na:
                     _cls = "na"; _mark = ICON_NA; _color = "#78716C"
@@ -711,6 +826,9 @@ def render_hu_detail(resultados, sprint_activo):
 
             aid_path = s3_info.get("aid", "")
             udz_path = s3_info.get("udz", "")
+            _s3_tipo_udz = s3_info.get("tipo_udz", "DESCONOCIDO")
+            _s3_esperado = s3_info.get("esperado", "")
+            _s3_es_resultados = _s3_tipo_udz == "RESULTADOS"
             def _s3_detail():
                 col1, col2 = st.columns(2)
                 with col1:
@@ -719,13 +837,16 @@ def render_hu_detail(resultados, sprint_activo):
                 with col2:
                     st.markdown("**UDZ s3_path encontrado:**")
                     st.code(udz_path or "(vacío)", language="text")
-                st.markdown("**Regla:** Las rutas deben coincidir exactamente (se ignora `/` al final)")
-                if aid_path and udz_path and normalizar_s3(aid_path) != normalizar_s3(udz_path):
-                    st.error(f"{ICON_ERROR} **Mismatch detectado** — Alinear al valor de UDZ:")
-                    st.info(f'**En AID** → `Ctrl+F: s3_path`\n```json\n"s3_path": "{normalizar_s3(udz_path)}"\n```')
+                if _s3_es_resultados:
+                    st.markdown("**Regla:** UDZ es de **transmisión (salida) — RESULTADOS**: la ruta no es idéntica a la de AID a propósito — donde AID dice `crudos`, UDZ debe decir `resultados` (el resto de la ruta igual)")
+                else:
+                    st.markdown("**Regla:** UDZ es de **crudos (entrada)**: la ruta debe coincidir exactamente con la de AID (se ignora `/` al final)")
+                if aid_path and udz_path and normalizar_s3(udz_path) != _s3_esperado:
+                    st.error(f"{ICON_ERROR} **Mismatch detectado** — Alinear UDZ a:")
+                    st.info(f'**En UDZ** → `Ctrl+F: s3_path`\n```json\n"s3_path": "{_s3_esperado}"\n```')
             val_card(s3_ok, "S3 Path — AID = UDZ", f"{_f_aid} & {_f_udz}",
-                     "Rutas del bucket AID y UDZ deben ser idénticas", _s3_detail,
-                     na=s3_na, campo="AID.s3_path ↔ UDZ.item.s3_path", valor_ok=normalizar_s3(aid_path) if aid_path else None)
+                     "Crudos: ruta idéntica a AID · Resultados: igual pero con 'crudos'→'resultados'", _s3_detail,
+                     na=s3_na, campo="AID.s3_path ↔ UDZ.item.s3_path", valor_ok=_s3_esperado if _s3_esperado else None)
 
             wf_val  = wf_info.get("workflow_name", "")
             uid_val = wf_info.get("udz_id", "")
@@ -790,7 +911,6 @@ def render_hu_detail(resultados, sprint_activo):
                      na=amb_wf_na, campo="AID.workflow_name ↔ UDZ.item.id",
                      valor_ok=(aid_amb if aid_amb != "DESCONOCIDO" else None))
 
-        #  Resumen corto: qué se encontró y qué falta (antes de Archivos y adjuntos)
         _arcs_r = r.get("archivos", {})
         _presentes  = [k for k in ("TA", "AID", "UDZ") if "NO" not in _arcs_r.get(k, "NO")]
         _faltan_arc = [k for k in ("TA", "AID", "UDZ") if "NO" in _arcs_r.get(k, "NO")]
@@ -845,7 +965,6 @@ def render_hu_detail(resultados, sprint_activo):
                 else:
                     st.error(f"**{comp}**: NO ENCONTRADO", icon=MI_ERROR)
 
-            #  Alerta config.json sin nombre descriptivo
             configs_sin_tipo = r.get("configs_sin_tipo", [])
             if configs_sin_tipo:
                 st.markdown("---")

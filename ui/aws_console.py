@@ -10,15 +10,28 @@ credenciales, el error real de AWS queda en el log.
 """
 import html
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
 
-from core.config import ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, MI_CLOUD, MI_INFO, MI_REFRESH, MI_SETTINGS, MI_OK, AWS_TABLAS, AWS_CRED_FILE
-from core.analysis import _val_ok, analizar_hu
+from core.config import ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, MI_CLOUD, MI_INFO, MI_REFRESH, MI_SETTINGS, MI_OK, MI_ERROR, AWS_TABLAS, AWS_CRED_FILE
+from core.analysis import _val_ok, analizar_hu, detectar_slots_udz
 from core.aws_upload import subir_componente
 from core.utils import obtener_usuario_actual
+
+#  Nombres para mostrar según el tipo de UDZ detectado (ver
+#  core.analysis.detectar_slots_udz) — CRUDOS = entrada, RESULTADOS = salida
+#  (transmisión). Se usan tanto para el título largo de la tarjeta como para
+#  el texto corto del botón.
+_UDZ_NOMBRE_LARGO = {"CRUDOS": "Crudos (entrada)", "RESULTADOS": "Transmisión (salida)"}
+_UDZ_NOMBRE_CORTO = {"CRUDOS": "UDZ Crudos", "RESULTADOS": "UDZ Result."}
+
+#  Tope de líneas que se guardan del log de consola — sin esto crece sin
+#  límite durante una sesión larga con muchas subidas y se vuelve pesado de
+#  renderizar. Se recorta a las más recientes, que son las que importan.
+LIMITE_LOG_LINEAS = 300
 
 #  Qué validaciones (de las 12 críticas) son el criterio de aceptación de cada
 #  componente para poder subirlo — no es un gate duro (el archivo se puede
@@ -79,20 +92,160 @@ def _verificar_ambiente(tipo: str, val: dict, ambiente_destino: str):
     return True, None
 
 
+#  Cada línea del log llega como "[HH:MM:SS] mensaje" (ver core/aws_upload._log)
+#  — se separa la hora del mensaje para poder atenuarla visualmente y dejar
+#  el mensaje como protagonista, en vez de una sola tira de texto plana.
+_TS_RE = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\]\s*(.*)$")
+
+
 def _render_consola(log_lineas):
     if not log_lineas:
-        st.markdown('<div class="aws-console"><span class="aws-console-empty">(sin actividad todavía)</span></div>', unsafe_allow_html=True)
+        st.markdown("""
+        <div class="aws-console-wrap">
+            <div class="aws-console-bar">
+                <span class="aws-console-dot red"></span><span class="aws-console-dot yellow"></span><span class="aws-console-dot green"></span>
+                <span class="aws-console-bar-label">consola · subida a AWS</span>
+            </div>
+            <div class="aws-console"><span class="aws-console-empty">(sin actividad todavía)</span></div>
+        </div>
+        """, unsafe_allow_html=True)
         return
 
     partes = []
     for linea in log_lineas:
         if not linea:
-            partes.append('<div style="height:8px"></div>')
+            partes.append('<div style="height:10px"></div>')
             continue
-        cls = "err" if "ERROR" in linea else ("warn" if "AVISO" in linea else ("ok" if ("OK" in linea or "Verificado" in linea) else ""))
-        partes.append(f'<div class="aws-console-line {cls}">{html.escape(linea)}</div>')
 
-    st.markdown(f'<div class="aws-console">{"".join(partes)}</div>', unsafe_allow_html=True)
+        if linea.startswith("──"):
+            titulo = linea.strip("─ ")
+            partes.append(f'<div class="aws-console-line sep">{html.escape(titulo)}</div>')
+            continue
+
+        m = _TS_RE.match(linea)
+        ts, cuerpo = (m.group(1), m.group(2)) if m else (None, linea)
+
+        if "ERROR" in cuerpo:
+            cls, icono = "err", "✗"
+        elif "AVISO" in cuerpo:
+            cls, icono = "warn", "⚠"
+        elif cuerpo.startswith("put_item OK") or "Verificado" in cuerpo:
+            cls, icono = "ok", "✓"
+        else:
+            cls, icono = "", "›"
+
+        _ts_html = f'<span class="aws-console-ts">{ts}</span>' if ts else ""
+        partes.append(
+            f'<div class="aws-console-line {cls}">{_ts_html}'
+            f'<span class="aws-console-icon">{icono}</span>{html.escape(cuerpo)}</div>'
+        )
+
+    st.markdown(f"""
+    <div class="aws-console-wrap">
+        <div class="aws-console-bar">
+            <span class="aws-console-dot red"></span><span class="aws-console-dot yellow"></span><span class="aws-console-dot green"></span>
+            <span class="aws-console-bar-label">consola · subida a AWS</span>
+        </div>
+        <div class="aws-console">{"".join(partes)}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def _agregar_al_log(label: str, ambiente: str, resultado: dict):
+    """Agrega el log de un intento de subida a la consola acumulada, con un
+    separador con hora para poder distinguir un intento del siguiente en una
+    sesión larga, y recorta el total para que no crezca sin límite."""
+    log_acumulado = st.session_state.setdefault("aws_console_log", [])
+    _hora = datetime.now().strftime("%H:%M:%S")
+    log_acumulado.append(f"── {label.upper()} → {ambiente.upper()} · {_hora} ──")
+    log_acumulado.extend(resultado.get("log", []))
+    log_acumulado.append("")
+    if len(log_acumulado) > LIMITE_LOG_LINEAS:
+        log_acumulado[:] = log_acumulado[-LIMITE_LOG_LINEAS:]
+    st.session_state["_aws_ultimo_resultado"] = {
+        "label": label, "ambiente": ambiente, "ok": bool(resultado.get("ok")), "en": _hora,
+    }
+
+
+def _construir_componentes(r: dict) -> list:
+    """Arma la lista de componentes a mostrar en la consola de subida: TA y
+    AID siempre son uno solo, UDZ puede ser uno o dos (ver
+    detectar_slots_udz) — cada elemento trae "clave" (prefijo de los campos
+    de trazabilidad `{clave}_aws_por/en/ambiente/tabla`, y las claves de
+    widgets), "tipo_tabla" (ta/aid/udz — para AWS_TABLAS y subir_componente,
+    que no conocen la separación crudos/resultados, van a la misma tabla) y
+    "label" (texto para mostrar)."""
+    componentes = [
+        {"clave": "ta", "tipo_tabla": "ta", "label": "TA", "label_corto": "TA",
+         "archivo": r.get("ta_activo"), "es_activo": True},
+        {"clave": "aid", "tipo_tabla": "aid", "label": "AID", "label_corto": "AID",
+         "archivo": r.get("aid_activo"), "es_activo": True},
+    ]
+
+    slots_udz = detectar_slots_udz(r)
+    if len(slots_udz) == 1:
+        s = slots_udz[0]
+        _sub = f" ({s['tipo']})" if s["tipo"] else ""
+        componentes.append({
+            "clave": "udz", "tipo_tabla": "udz", "label": f"UDZ{_sub}", "label_corto": "UDZ",
+            "archivo": s["archivo"], "es_activo": True,
+        })
+    else:
+        for s in slots_udz:
+            componentes.append({
+                "clave": f"udz_{s['tipo'].lower()}", "tipo_tabla": "udz",
+                "label": f"UDZ — {_UDZ_NOMBRE_LARGO.get(s['tipo'], s['tipo'])}",
+                "label_corto": _UDZ_NOMBRE_CORTO.get(s["tipo"], "UDZ"),
+                "archivo": s["archivo"], "es_activo": s["es_activo"],
+            })
+    return componentes
+
+
+def _estado_componente(tipo_tabla: str, label: str, keys: list, archivo, val: dict,
+                        ambiente: str, confirma_pdn: bool, es_activo: bool = True):
+    """Calcula, para un componente, si está listo para subir y por qué no si
+    no lo está — un solo lugar de verdad que usan el resumen de arriba, la
+    tarjeta individual y el botón de subida masiva, así nunca se
+    desincronizan entre sí."""
+    archivo_perdido = bool(archivo) and not Path(archivo).exists()
+    if archivo_perdido:
+        archivo = None
+
+    # "val" son las 12 validaciones críticas, calculadas sobre un solo UDZ a
+    # la vez (el activo) — si este componente NO es el activo, esos
+    # resultados describen al OTRO archivo, no al suyo. Mostrarlos igual acá
+    # sería engañoso (parecería que este archivo específico tiene esos
+    # errores), así que se omiten: la única razón de bloqueo relevante es
+    # "todavía no se validó".
+    if archivo and es_activo:
+        motivos = _motivos_bloqueo(val, keys)
+        amb_ok, amb_motivo = _verificar_ambiente(tipo_tabla, val, ambiente)
+    else:
+        motivos = []
+        amb_ok, amb_motivo = True, None
+    listo = bool(archivo) and not motivos and es_activo
+
+    if not archivo:
+        ayuda = f"No hay archivo {label} para esta HU"
+    elif not es_activo:
+        # Las 12 validaciones críticas corren sobre un solo UDZ a la vez (el
+        # "activo" elegido arriba en "UDZ a usar") — este es el otro archivo
+        # UDZ de la HU, que todavía no se validó, así que no se deja subir
+        # ciego: primero hay que elegirlo como activo para validarlo.
+        ayuda = "Este es el otro archivo UDZ de la HU — elegilo en 'UDZ a usar' (arriba) para validarlo antes de subirlo"
+    elif not amb_ok:
+        ayuda = amb_motivo
+    elif ambiente == "pdn" and not confirma_pdn:
+        ayuda = "Marcá la confirmación de PDN primero"
+    else:
+        ayuda = None
+
+    return {
+        "archivo": archivo, "archivo_perdido": archivo_perdido,
+        "motivos": motivos, "listo": listo,
+        "amb_ok": amb_ok, "amb_motivo": amb_motivo,
+        "ayuda": ayuda, "puede_subir": ayuda is None,
+    }
 
 
 def _render_contenido(archivo: Path, tipo: str):
@@ -158,10 +311,6 @@ def _render_panel_credenciales():
     _estado_txt = f"{ICON_OK} Configuradas — actualizadas {datetime.fromtimestamp(_ruta.stat().st_mtime).strftime('%d/%m/%Y %H:%M')}" if _existe else f"{ICON_WARNING} No configuradas todavía"
 
     with st.expander(f"Credenciales AWS — {_estado_txt}", icon=MI_SETTINGS, expanded=not _existe):
-        st.caption(
-            f"Se guardan en `{_ruta.name}` en la raíz del proyecto (nunca se sube a git). "
-            f"Nunca se muestran acá los valores ya guardados, solo si hay algo cargado."
-        )
         with st.form("form_credenciales_aws", clear_on_submit=False):
             _access_key = st.text_input("Access Key ID", placeholder="AKIA... o ASIA...")
             _secret_key = st.text_input("Secret Access Key", type="password")
@@ -209,56 +358,115 @@ def render_aws_console(resultados):
     val = r.get("validaciones", {})
     st.caption(f"HU activa: {r.get('hu_id')} — {r.get('hu_title', '')}")
 
-    col_amb, col_pdn = st.columns([0.3, 0.7], vertical_alignment="center")
-    with col_amb:
-        ambiente = st.radio(
-            "Ambiente destino", ["qa", "pdn"], format_func=lambda a: a.upper(),
-            horizontal=True, key="aws_ambiente",
-        )
-    confirma_pdn = True
-    with col_pdn:
-        if ambiente == "pdn":
-            confirma_pdn = st.checkbox(
-                f"{ICON_WARNING} Confirmo que quiero escribir en PRODUCCIÓN (PDN) — esto no es reversible",
-                value=False, key="aws_confirma_pdn",
+    # Las keys de "Ambiente destino" y la confirmación de PDN se escopan por
+    # HU (no son globales): antes eran una sola key compartida entre todas
+    # las HU, así que si dejabas "PDN" seleccionado (o la confirmación
+    # marcada) en una HU y cambiabas a otra en "Selecciona una HU", esa
+    # elección quedaba pegada — ibas a ver la alerta de "el AID parece ser
+    # de QA, no de PDN" sin haber tocado el radio vos mismo, porque en
+    # realidad seguía en el valor de la HU anterior. Al escoparlo por HU,
+    # cada HU arranca en QA sin confirmar, sin arrastrar nada de la anterior.
+    #
+    # La zona entera vive en un container con key fija ("aws_zona_ambiente")
+    # para poder pintarle un fondo/borde de alerta cuando el modo es PDN —
+    # antes el selector era un radio suelto, tan discreto como cualquier
+    # otro campo, sin nada que refuerce visualmente "estás por escribir en
+    # producción" más allá de leer la palabra en el radio.
+    with st.container(key="aws_zona_ambiente", border=True):
+        col_amb, col_pdn = st.columns([0.3, 0.7], vertical_alignment="center")
+        with col_amb:
+            ambiente = st.radio(
+                "Ambiente destino", ["qa", "pdn"], format_func=lambda a: a.upper(),
+                horizontal=True, key=f"aws_ambiente_{hu_id_activa}",
             )
+        confirma_pdn = True
+        with col_pdn:
+            if ambiente == "pdn":
+                confirma_pdn = st.checkbox(
+                    f"{ICON_WARNING} Confirmo que quiero escribir en PRODUCCIÓN (PDN) — esto no es reversible",
+                    value=False, key=f"aws_confirma_pdn_{hu_id_activa}",
+                )
+            else:
+                st.caption("Los componentes se suben a las tablas de QA — ambiente de pruebas.")
 
-    archivos_activos = {"ta": r.get("ta_activo"), "aid": r.get("aid_activo"), "udz": r.get("udz_activo")}
-    cols = st.columns(3, gap="medium")
+    _modo_pdn = ambiente == "pdn"
+    st.markdown(f"""
+    <style>
+    div.st-key-aws_zona_ambiente {{
+        background: {"#FEF2F2" if _modo_pdn else "var(--track)"} !important;
+        border: 1.5px solid {"var(--red)" if _modo_pdn else "var(--line)"} !important;
+        border-radius: 12px !important;
+    }}
+    </style>
+    """, unsafe_allow_html=True)
+    # Componentes a subir — TA y AID son siempre uno, UDZ puede ser uno o dos
+    # (crudos/resultados como archivos separados, ver detectar_slots_udz).
+    componentes = _construir_componentes(r)
 
-    for (tipo, (keys, criterio_txt)), col in zip(CRITERIOS_ACEPTACION.items(), cols):
+    # Un solo cálculo de estado por componente, reusado por el resumen de
+    # arriba, el botón masivo y cada tarjeta — así nunca se desincronizan.
+    estados = {}
+    for comp in componentes:
+        keys, _criterio = CRITERIOS_ACEPTACION[comp["tipo_tabla"]]
+        estados[comp["clave"]] = _estado_componente(
+            comp["tipo_tabla"], comp["label"], keys, comp["archivo"], val,
+            ambiente, confirma_pdn, comp["es_activo"],
+        )
+    _n_listos = sum(1 for e in estados.values() if e["puede_subir"])
+    _n_total = len(componentes)
+    _todos_listos = _n_listos == _n_total
+
+    st.markdown(f"""
+    <div class="aws-summary-strip">
+        <div class="aws-summary-text">{ICON_OK if _todos_listos else ICON_WARNING} {_n_listos} de {_n_total} listos para subir a {ambiente.upper()}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.container(key="aws_subir_todos_wrap"):
+        if st.button(
+            f"Subir los {_n_total} componentes", key="aws_console_subir_todos", width='stretch',
+            icon=MI_CLOUD, type="primary", disabled=not _todos_listos,
+            help=None if _todos_listos else "Todos los componentes deben estar listos (sin alertas) para usar esta opción",
+        ):
+            for comp in componentes:
+                archivo = estados[comp["clave"]]["archivo"]
+                with st.spinner(f"Subiendo {comp['label']} a {ambiente.upper()}..."):
+                    resultado = subir_componente(comp["tipo_tabla"], Path(archivo), ambiente=ambiente)
+                _agregar_al_log(comp["label"], ambiente, resultado)
+                if resultado.get("ok"):
+                    _persistir_subida_aws(r, comp["clave"], ambiente, resultado.get("tabla"), resultados)
+            st.rerun()
+
+    cols = st.columns(_n_total, gap="medium")
+
+    for comp, col in zip(componentes, cols):
         with col:
-            archivo = archivos_activos.get(tipo)
-            # El path activo viene de analisis_tecnico.json y puede quedar
-            # obsoleto: si el archivo real se borró/movió (o falló al
-            # descomprimirse) desde el último análisis, no debe romper la
-            # consola — se trata como "no disponible" hasta que se actualice.
-            archivo_perdido = bool(archivo) and not Path(archivo).exists()
-            if archivo_perdido:
-                archivo = None
-
-            tabla_destino = AWS_TABLAS.get(ambiente, {}).get(tipo, "(sin configurar)")
-            motivos = _motivos_bloqueo(val, keys) if archivo else []
-            listo = bool(archivo) and not motivos
+            clave = comp["clave"]
+            label = comp["label"]
+            _, criterio_txt = CRITERIOS_ACEPTACION[comp["tipo_tabla"]]
+            estado = estados[clave]
+            archivo = estado["archivo"]
+            tabla_destino = AWS_TABLAS.get(ambiente, {}).get(comp["tipo_tabla"], "(sin configurar)")
+            listo = estado["listo"]
             icono = ICON_OK if listo else (ICON_WARNING if archivo else ICON_NA)
             cls_card = "ok" if listo else ("warn" if archivo else "na")
 
             ultima_subida = ""
-            if r.get(f"{tipo}_aws_por"):
-                _fecha = (r.get(f"{tipo}_aws_en") or "")[:16].replace("T", " ")
-                _amb_prev = (r.get(f"{tipo}_aws_ambiente") or "").upper()
+            if r.get(f"{clave}_aws_por"):
+                _fecha = (r.get(f"{clave}_aws_en") or "")[:16].replace("T", " ")
+                _amb_prev = (r.get(f"{clave}_aws_ambiente") or "").upper()
                 ultima_subida = (
-                    f"<div style='font-size:10.5px;color:#78716C;margin-top:6px'>"
-                    f"{ICON_OK} Último envío: {html.escape(r[f'{tipo}_aws_por'])} · {_amb_prev} · {_fecha}</div>"
+                    f'<span class="aws-chip">{ICON_OK} <b>{html.escape(_amb_prev)}</b> · '
+                    f'{html.escape(r[f"{clave}_aws_por"])} · {_fecha}</span>'
                 )
 
             col_titulo, col_refresh = st.columns([0.82, 0.18], vertical_alignment="center")
             with col_titulo:
-                st.markdown(f'<div class="aws-card-title" style="margin-top:6px">{icono} {tipo.upper()}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="aws-card-title" style="margin-top:6px">{icono} {label}</div>', unsafe_allow_html=True)
             with col_refresh:
                 if st.button(
-                    "", key=f"aws_console_refresh_{tipo}", icon=MI_REFRESH,
-                    help=f"Relee el {tipo.upper()} del disco y recalcula sus validaciones",
+                    "", key=f"aws_console_refresh_{clave}", icon=MI_REFRESH,
+                    help=f"Relee el {label} del disco y recalcula sus validaciones",
                 ):
                     hu_folder_str = r.get("hu_folder")
                     if hu_folder_str:
@@ -278,27 +486,34 @@ def render_aws_console(resultados):
             </div>
             """, unsafe_allow_html=True)
 
-            if motivos:
+            if not comp["es_activo"]:
+                st.markdown(f"""
+                <div class="aws-alert" style="background:#EFF6FF;border-color:#BFDBFE;color:#1E40AF">
+                    <b>{ICON_WARNING} No es el UDZ activo:</b> este archivo no está siendo validado ahora mismo.
+                    Elegilo en <b>"UDZ a usar"</b> (arriba, en el detalle de la HU) para validarlo antes de subirlo.
+                </div>
+                """, unsafe_allow_html=True)
+
+            if estado["motivos"]:
                 alerta_items = "".join(
                     f"<div style='margin-top:3px'>• <code>{html.escape(m)}</code>: {html.escape(val.get(m, {}).get('detalle', ''))}</div>"
-                    for m in motivos
+                    for m in estado["motivos"]
                 )
                 st.markdown(f"""
                 <div class="aws-alert">
-                    <b>{ICON_WARNING} No está listo para subir ({len(motivos)}):</b>
+                    <b>{ICON_WARNING} No está listo para subir ({len(estado['motivos'])}):</b>
                     {alerta_items}
                 </div>
                 """, unsafe_allow_html=True)
 
-            amb_ok, amb_motivo = _verificar_ambiente(tipo, val, ambiente) if archivo else (True, None)
-            if amb_motivo:
+            if estado["amb_motivo"]:
                 st.markdown(f"""
                 <div class="aws-alert" style="background:#FEE2E2;border-color:#FCA5A5;color:#991B1B">
-                    <b>{ICON_ERROR} Ambiente no coincide:</b> {html.escape(amb_motivo)}
+                    <b>{ICON_ERROR} Ambiente no coincide:</b> {html.escape(estado['amb_motivo'])}
                 </div>
                 """, unsafe_allow_html=True)
 
-            if archivo_perdido:
+            if estado["archivo_perdido"]:
                 st.markdown(f"""
                 <div class="aws-alert" style="background:#FEE2E2;border-color:#FCA5A5;color:#991B1B">
                     <b>{ICON_ERROR} El archivo ya no está en disco</b> — puede haberse movido, borrado, o
@@ -306,36 +521,42 @@ def render_aws_console(resultados):
                 </div>
                 """, unsafe_allow_html=True)
 
-            if not archivo:
-                ayuda = f"No hay archivo {tipo.upper()} activo para esta HU"
-            elif not amb_ok:
-                ayuda = amb_motivo
-            elif ambiente == "pdn" and not confirma_pdn:
-                ayuda = "Marcá la confirmación de PDN primero"
-            else:
-                ayuda = None
-
             if archivo:
-                _render_contenido(Path(archivo), tipo)
+                _render_contenido(Path(archivo), clave)
 
-            if st.button(
-                f"Subir {tipo.upper()}", key=f"aws_console_subir_{tipo}", width='stretch',
-                icon=MI_CLOUD, disabled=bool(ayuda), help=ayuda,
-            ):
-                resultado = subir_componente(tipo, Path(archivo), ambiente=ambiente)
-                log_acumulado = st.session_state.setdefault("aws_console_log", [])
-                log_acumulado.extend(resultado.get("log", []))
-                log_acumulado.append("")
+            with st.container(key=f"aws_subir_wrap_{clave}"):
+                if st.button(
+                    f"Subir {comp['label_corto']}", key=f"aws_console_subir_{clave}", width='stretch',
+                    icon=MI_CLOUD, disabled=not estado["puede_subir"], help=estado["ayuda"],
+                ):
+                    with st.spinner(f"Subiendo {label} a {ambiente.upper()}..."):
+                        resultado = subir_componente(comp["tipo_tabla"], Path(archivo), ambiente=ambiente)
+                    _agregar_al_log(label, ambiente, resultado)
+                    if resultado.get("ok"):
+                        _persistir_subida_aws(r, clave, ambiente, resultado.get("tabla"), resultados)
+                    st.rerun()
 
-                if resultado.get("ok"):
-                    _persistir_subida_aws(r, tipo, ambiente, resultado.get("tabla"), resultados)
+    # Feedback del último intento (individual o masivo) — antes solo se veía
+    # en el log de la consola, más abajo; con una HU con varios componentes
+    # había que bajar a buscarlo para saber si funcionó o no.
+    _ultimo = st.session_state.get("_aws_ultimo_resultado")
+    if _ultimo:
+        if _ultimo["ok"]:
+            st.success(
+                f"{_ultimo['label']} subido a {_ultimo['ambiente'].upper()} — {_ultimo['en']}",
+                icon=MI_OK,
+            )
+        else:
+            st.error(
+                f"Falló la subida de {_ultimo['label']} a {_ultimo['ambiente'].upper()} ({_ultimo['en']}) — detalle abajo en la consola",
+                icon=MI_ERROR,
+            )
 
-                st.rerun()
-
-    st.markdown("<div style='font-size:12px;font-weight:700;color:#78716C;margin-top:16px;margin-bottom:6px'>CONSOLA</div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
     _render_consola(st.session_state.get("aws_console_log", []))
     st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
 
     if st.button("Limpiar consola", key="aws_console_limpiar"):
         st.session_state["aws_console_log"] = []
+        st.session_state.pop("_aws_ultimo_resultado", None)
         st.rerun()

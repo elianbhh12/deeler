@@ -68,7 +68,6 @@ def render_tabla_resumen(resultados):
     for r in filtered_resultados_ordenados:
         val   = r.get("validaciones", {})
         arcs  = r.get("archivos", {})
-        amb   = val.get("ambiente", {}).get("ambiente", "?")
         tipo_r = r.get("tipo_cambio", "").upper()
         es_desp = "DESPLIEGUE" in tipo_r
 
@@ -83,7 +82,13 @@ def render_tabla_resumen(resultados):
         udz_ok = _arc_badge("UDZ")
         rnf_ok = ICON_OK if "NO" not in arcs.get("RNF", "") else ICON_ERROR
 
-        amb_badge = amb
+        #  Desplegado en PDN — hecho manual registrado desde el detalle de la
+        #  HU (posterior a la aprobación), no algo que se infiera del análisis.
+        _desplegado_pdn_por = r.get("desplegado_pdn_por")
+        if _desplegado_pdn_por:
+            desplegado_badge = f"{ICON_OK} {(r.get('desplegado_pdn_en') or '')[:10]}"
+        else:
+            desplegado_badge = ICON_NA
 
         # Agregar fecha descarga para referencia
         downloaded_at = r.get("downloaded_at", "")
@@ -99,7 +104,7 @@ def render_tabla_resumen(resultados):
             "TA": ta_ok,
             "AID": aid_ok,
             "UDZ": udz_ok,
-            "Amb": amb_badge,
+            "Desplegado PDN": desplegado_badge,
             "Estado": _est_short
         })
 
@@ -119,7 +124,7 @@ def render_tabla_resumen(resultados):
                 return "background-color:#F5F5F4;color:#78716C"
             return ""
 
-        _estilo = df_tabla.style.map(_color_celda, subset=["RNF", "TA", "AID", "UDZ", "Estado"])
+        _estilo = df_tabla.style.map(_color_celda, subset=["RNF", "TA", "AID", "UDZ", "Desplegado PDN", "Estado"])
         st.dataframe(_estilo, width='stretch', hide_index=True)
 
         #  Alertas de RNF faltante

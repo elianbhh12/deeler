@@ -185,6 +185,50 @@ def clasificar_udz_desde_json(udz_data: dict) -> str:
     return "DESCONOCIDO"
 
 
+def detectar_slots_udz(r: dict) -> list:
+    """Determina en cuántos "slots" de subida a AWS se separa el UDZ de esta
+    HU. Un UDZ es CRUDOS (entrada) o RESULTADOS/transmisión (salida) — casi
+    siempre la HU trae un solo archivo UDZ (un slot), pero a veces trae los
+    dos por separado como archivos distintos, y ahí cada uno se sube y se
+    trackea por su cuenta (a veces solo hace falta uno de los dos, ej. un
+    flujo que solo lee crudos sin publicar transmisión de resultados).
+
+    Devuelve una lista de dicts {"tipo": "CRUDOS"/"RESULTADOS"/None,
+    "archivo": str, "es_activo": bool} — "es_activo" indica si ese archivo es
+    el mismo que `udz_activo` (el único que de verdad está validado ahora
+    mismo por las 12 validaciones críticas; ver selector "UDZ a usar" en
+    ui/hu_detail.py). Con un solo archivo, la lista siempre tiene 1 elemento
+    (comportamiento de siempre); con crudos+resultados como archivos
+    distintos, tiene 2."""
+    udz_files = r.get("udz_files") or []
+    udz_activo = r.get("udz_activo")
+
+    if not udz_files:
+        return [{"tipo": None, "archivo": udz_activo, "es_activo": True}]
+
+    clasificados = []
+    for p in udz_files:
+        data = cargar_json(Path(p))
+        tipo = clasificar_udz_desde_json(data) if data else "DESCONOCIDO"
+        clasificados.append({"tipo": tipo, "archivo": str(p), "es_activo": str(p) == str(udz_activo)})
+
+    tipos_presentes = {c["tipo"] for c in clasificados if c["tipo"] in ("CRUDOS", "RESULTADOS")}
+    if len(tipos_presentes) < 2:
+        # Un solo tipo detectado entre los archivos (o ninguno clasificable)
+        # — se mantiene el comportamiento de siempre: un solo slot, con el
+        # archivo activo elegido en el análisis.
+        tipo_unico = next(iter(tipos_presentes), None)
+        return [{"tipo": tipo_unico, "archivo": udz_activo, "es_activo": True}]
+
+    # CRUDOS y RESULTADOS como archivos distintos — dos slots independientes.
+    slots = []
+    for tipo in ("CRUDOS", "RESULTADOS"):
+        c = next((c for c in clasificados if c["tipo"] == tipo), None)
+        if c:
+            slots.append(c)
+    return slots
+
+
 def buscar_archivos(hu_folder: Path):
     adj = hu_folder / "adjuntos"
     res = {"ta": None, "aid": None, "udz": None, "ta_files": [], "aid_files": [], "udz_files": [], "configs_sin_tipo": []}
@@ -392,17 +436,32 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
     if udz_emit_event is None:
         udz_emit_event = _udz_root.get("emit_event")
     udz_id = (_udz_item.get("id","") if isinstance(_udz_item, dict) else "") or _udz_root.get("id","")
+
+    # El s3_path de UDZ no se compara igual según sea CRUDOS o RESULTADOS:
+    # - CRUDOS (entrada): la ruta debe ser IDÉNTICA a la de AID.
+    # - RESULTADOS (transmisión, salida): la ruta es distinta a propósito —
+    #   donde AID dice "crudos", UDZ debe decir "resultados" (el resto de
+    #   la ruta se mantiene igual). Comparar por igualdad estricta en este
+    #   caso siempre daba error, aunque el archivo estuviera bien armado.
+    _udz_tipo_s3 = clasificar_udz_desde_json(udz) if udz else "DESCONOCIDO"
     # Si falta alguno de los dos y es MODIFICACIÓN → N/A (True), no bloquear
     s3_na = not (aid_s3 and udz_s3)
     if aid_s3 and udz_s3:
-        s3_ok = normalizar_s3(aid_s3) == normalizar_s3(udz_s3)
+        if _udz_tipo_s3 == "RESULTADOS":
+            s3_esperado = normalizar_s3(aid_s3).replace("crudos", "resultados")
+        else:
+            s3_esperado = normalizar_s3(aid_s3)
+        s3_ok = s3_esperado == normalizar_s3(udz_s3)
     else:
         s3_ok = not es_despliegue  # DESPLIEGUE: False (error); MODIFICACIÓN: True (N/A)
+        s3_esperado = normalizar_s3(aid_s3) if aid_s3 else ""
     resultado["validaciones"]["s3_path"] = {
         "ok": s3_ok,
         "na": s3_na and not es_despliegue,
         "aid": aid_s3,
         "udz": udz_s3,
+        "tipo_udz": _udz_tipo_s3,
+        "esperado": s3_esperado,
         "detalle": f"{ICON_OK} s3_path coinciden" if s3_ok else f"{ICON_ERROR} AID: {aid_s3} | UDZ: {udz_s3}"
     }
 
@@ -430,7 +489,12 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
     topic = topic_vals[0] if topic_vals else ""
 
     kf_na = not bool(ta)
-    kf_ok = all(t == KAFKA_TOPIC_REQUERIDO for t in topic_vals) if topic_vals else (not es_despliegue)  # sin TA en MODIFICACIÓN → N/A
+    if topic_vals:
+        kf_ok = all(t == KAFKA_TOPIC_REQUERIDO for t in topic_vals)
+    elif not ta:
+        kf_ok = not es_despliegue  # sin TA en MODIFICACIÓN → no bloquea (ya es N/A por kf_na)
+    else:
+        kf_ok = False  # TA existe pero no tiene kafka_output_topic — error real, no falso OK
     resultado["validaciones"]["kafka"] = {
         "ok": kf_ok,
         "na": kf_na and not es_despliegue,
@@ -690,17 +754,19 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
     resultado["analizado_por"] = obtener_usuario_actual()
     resultado["analizado_en"] = datetime.now().isoformat()
 
-    # La aprobación para PDN (y la confirmación de que se probó en QA) son actos
-    # explícitos del usuario, no algo que se recalcula solo. Si ya existían en el
-    # análisis guardado previamente, se conservan al re-analizar (ya se leyó
-    # arriba en _anterior, para no leer el archivo dos veces).
+    # La confirmación de que se probó en QA es un acto explícito del usuario,
+    # no algo que se recalcula solo. Si ya existía en el análisis guardado
+    # previamente, se conserva al re-analizar (ya se leyó arriba en
+    # _anterior, para no leer el archivo dos veces).
     if _anterior:
-        campos_a_conservar = ["aprobado_por", "aprobado_en", "aprobado_estado_code",
-                               "probado_qa_por", "probado_qa_en",
-                               "rnf_copiado_por", "rnf_copiado_en"]
+        campos_a_conservar = ["probado_qa_por", "probado_qa_en", "probado_qa_estado_code",
+                               "rnf_copiado_por", "rnf_copiado_en",
+                               "desplegado_pdn_por", "desplegado_pdn_en"]
         # Trazabilidad de subida a AWS: igual, es un acto explícito por
-        # componente (ta/aid/udz), se conserva al re-analizar.
-        for _tipo_aws in ("ta", "aid", "udz"):
+        # componente (ta/aid/udz), se conserva al re-analizar. udz_crudos y
+        # udz_resultados son los slots separados cuando la HU trae ambos
+        # tipos de UDZ como archivos distintos (ver detectar_slots_udz).
+        for _tipo_aws in ("ta", "aid", "udz", "udz_crudos", "udz_resultados"):
             campos_a_conservar += [f"{_tipo_aws}_aws_ambiente", f"{_tipo_aws}_aws_por",
                                     f"{_tipo_aws}_aws_en", f"{_tipo_aws}_aws_tabla"]
         for campo in campos_a_conservar:

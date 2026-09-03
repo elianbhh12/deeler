@@ -35,6 +35,65 @@ def _get_con_reintentos(url, headers, timeout=60, intentos=3, espera=1.5):
     raise RuntimeError("_get_con_reintentos: intentos debe ser >= 1")
 
 
+def refrescar_estados_ado(sprint_folder: Path) -> int:
+    """Vuelve a consultar en ADO el estado actual (System.State,
+    System.ChangedDate) de las HU ya descargadas en esta carpeta, y
+    actualiza su metadata.json local.
+
+    descargar_hu() excluye a propósito las HU 'Closed' (no queremos volver a
+    traer trabajo ya cerrado), pero eso significa que una HU que se cierra en
+    ADO DESPUÉS de haberla descargado nunca se vuelve a consultar — sin este
+    refresco, el Excel y la tabla se quedan mostrando para siempre el estado
+    que tenía al momento de la descarga, aunque en ADO ya esté Closed.
+    Se llama antes de analizar (ver ui/ingest.py), no es un botón aparte.
+    """
+    ids_por_folder = {}
+    for d in sprint_folder.iterdir():
+        if not d.is_dir():
+            continue
+        m = re.match(r"^(\d+)-", d.name)
+        if not m:
+            continue
+        meta_path = d / "metadata.json"
+        if meta_path.exists():
+            ids_por_folder[int(m.group(1))] = meta_path
+
+    if not ids_por_folder:
+        return 0
+
+    ids_csv = ",".join(str(i) for i in ids_por_folder)
+    try:
+        r = _get_con_reintentos(
+            ado_url(f"wit/workitems?ids={ids_csv}&fields=System.State,System.ChangedDate&api-version=7.1"),
+            headers=HEADERS, timeout=30)
+        r.raise_for_status()
+        items = r.json().get("value", [])
+    except Exception:
+        # Best-effort: si ADO no responde (o venció el token), seguimos con
+        # el estado local que ya había — no bloqueamos el análisis por esto.
+        return 0
+
+    actualizados = 0
+    for it in items:
+        wid = it.get("id")
+        meta_path = ids_por_folder.get(wid)
+        if not meta_path:
+            continue
+        f = it.get("fields", {})
+        nuevo_estado  = f.get("System.State", "")
+        nuevo_changed = f.get("System.ChangedDate", "")
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if nuevo_estado and (meta.get("state") != nuevo_estado or meta.get("changed_date") != nuevo_changed):
+            meta["state"] = nuevo_estado
+            meta["changed_date"] = nuevo_changed
+            meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+            actualizados += 1
+    return actualizados
+
+
 def descargar_hu(iteration_path: str):
     log_container = st.empty()
 

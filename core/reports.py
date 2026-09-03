@@ -55,6 +55,16 @@ def _header_style(ws, fila=1):
     ws.auto_filter.ref = f"A{fila}:{get_column_letter(ws.max_column)}{fila}"
 
 
+def _autofit_columnas(ws, minimo=6, maximo=45, holgura=3):
+    """Ajusta el ancho de cada columna al contenido más largo que tenga
+    (encabezado o dato), con un margen para el ícono de autofiltro y sin
+    dejar que una celda gigante desborde toda la hoja."""
+    for columna in ws.columns:
+        letra = get_column_letter(columna[0].column)
+        largo = max((len(str(c.value)) for c in columna if c.value is not None), default=0)
+        ws.column_dimensions[letra].width = max(minimo, min(maximo, largo + holgura))
+
+
 def _bandear_filas(ws, primera_fila_datos, ultima_fila):
     """Pinta filas alternas con una banda muy sutil para que se vea como una
     tabla real, sin tocar bordes/fuente/alineación (eso ya lo puso cada fila
@@ -93,9 +103,10 @@ def generar_excel_consolidado(resultados: list, guardar_en_carpeta: Path = None)
     #  HEADERS
     headers = ["ID", "Título", "Tipo", "Sprint", "Estado ADO",
                "Fecha Creación", "Fecha Descarga", "Fecha Cierre",
-               "TA", "AID", "UDZ", "RNF", "Días Creación→Cierre", "Días Descarga→Cierre",
-               "Probado en QA por", "Fecha prueba QA", "Aprobado por", "Fecha aprobación",
-               "TA → AWS", "AID → AWS", "UDZ → AWS"]
+               "Días Creación→Cierre", "Días Descarga→Cierre",
+               "Probado en QA por", "Fecha prueba QA",
+               "TA → AWS", "AID → AWS", "UDZ → AWS",
+               "Desplegado en PDN por", "Fecha despliegue PDN"]
 
     ws.append(headers)
     _header_style(ws)
@@ -133,43 +144,53 @@ def generar_excel_consolidado(resultados: list, guardar_en_carpeta: Path = None)
         dias_creacion_str = dias_creacion_cierre if dias_creacion_cierre > 0 else "-"
         dias_descarga_str = dias_descarga_cierre if dias_descarga_cierre > 0 else "-"
 
-        # Archivos
-        arcs = r.get("archivos", {})
-        ta = ICON_SUCCESS if "NO" not in arcs.get("TA", "") else ICON_FAIL
-        aid = ICON_SUCCESS if "NO" not in arcs.get("AID", "") else ICON_FAIL
-        udz = ICON_SUCCESS if "NO" not in arcs.get("UDZ", "") else ICON_FAIL
-        rnf = ICON_SUCCESS if r.get("rnf_path") else ICON_FAIL
-
-        # Trazabilidad de QA y aprobación para PDN
+        # Trazabilidad de prueba en QA
         probado_qa_por = r.get("probado_qa_por") or "-"
         probado_qa_en_raw = r.get("probado_qa_en", "")
         probado_qa_en = probado_qa_en_raw[:16].replace("T", " ") if probado_qa_en_raw else "-"
-        aprobado_por = r.get("aprobado_por") or "-"
-        aprobado_en_raw = r.get("aprobado_en", "")
-        aprobado_en = aprobado_en_raw[:16].replace("T", " ") if aprobado_en_raw else "-"
 
         # Trazabilidad de subida a AWS, por componente — quién, a qué
         # ambiente y cuándo (ver ui/aws_console.py, que es quien la graba).
-        def _aws_txt(tipo_comp):
-            por = r.get(f"{tipo_comp}_aws_por")
+        # UDZ puede haberse subido como un solo archivo ("udz") o, si la HU
+        # trae crudos y transmisión de resultados como archivos separados,
+        # como dos partes independientes ("udz_crudos"/"udz_resultados",
+        # ver core.analysis.detectar_slots_udz) — se muestran las que
+        # existan, para no perder de vista que puede faltar una de las dos.
+        _UDZ_ETIQUETA = {"udz_crudos": "Crudos", "udz_resultados": "Result."}
+
+        def _aws_txt_una(clave):
+            por = r.get(f"{clave}_aws_por")
             if not por:
-                return "-"
-            amb = (r.get(f"{tipo_comp}_aws_ambiente") or "").upper()
-            en = (r.get(f"{tipo_comp}_aws_en") or "")[:16].replace("T", " ")
-            return f"{amb} · {por} · {en}"
+                return None
+            amb = (r.get(f"{clave}_aws_ambiente") or "").upper()
+            en = (r.get(f"{clave}_aws_en") or "")[:16].replace("T", " ")
+            _etq = _UDZ_ETIQUETA.get(clave)
+            _pref = f"{_etq}: " if _etq else ""
+            return f"{_pref}{amb} · {por} · {en}"
+
+        def _aws_txt(tipo_comp):
+            claves = [tipo_comp] if tipo_comp != "udz" else ["udz", "udz_crudos", "udz_resultados"]
+            partes = [t for t in (_aws_txt_una(c) for c in claves) if t]
+            return " | ".join(partes) if partes else "-"
 
         ta_aws = _aws_txt("ta")
         aid_aws = _aws_txt("aid")
         udz_aws = _aws_txt("udz")
 
+        # Trazabilidad de despliegue real en PDN (hecho manual, posterior a
+        # la prueba en QA — ver ui/hu_detail.py).
+        desplegado_pdn_por = r.get("desplegado_pdn_por") or "-"
+        desplegado_pdn_en_raw = r.get("desplegado_pdn_en", "")
+        desplegado_pdn_en = desplegado_pdn_en_raw[:16].replace("T", " ") if desplegado_pdn_en_raw else "-"
+
         # Agregar fila con nuevas fechas (sin Ambiente)
         ws.append([
             hu_id, title, tipo, sprint, estado_ado,
             fecha_creacion, fecha_descarga, fecha_cierre,
-            ta, aid, udz, rnf,
             dias_creacion_str, dias_descarga_str,
-            probado_qa_por, probado_qa_en, aprobado_por, aprobado_en,
-            ta_aws, aid_aws, udz_aws
+            probado_qa_por, probado_qa_en,
+            ta_aws, aid_aws, udz_aws,
+            desplegado_pdn_por, desplegado_pdn_en
         ])
 
         # Aplicar estilos a fila: borde, centrado y una sola fuente en todo
@@ -188,28 +209,11 @@ def generar_excel_consolidado(resultados: list, guardar_en_carpeta: Path = None)
 
     _bandear_filas(ws, 2, row - 1)
 
-    #  AJUSTAR ANCHO COLUMNAS
-    ws.column_dimensions["A"].width = 12   # ID
-    ws.column_dimensions["B"].width = 35   # Título
-    ws.column_dimensions["C"].width = 15   # Tipo
-    ws.column_dimensions["D"].width = 18   # Sprint
-    ws.column_dimensions["E"].width = 12   # Estado ADO
-    ws.column_dimensions["F"].width = 14   # Fecha Creación
-    ws.column_dimensions["G"].width = 14   # Fecha Descarga
-    ws.column_dimensions["H"].width = 14   # Fecha Cierre
-    ws.column_dimensions["I"].width = 5    # TA
-    ws.column_dimensions["J"].width = 5    # AID
-    ws.column_dimensions["K"].width = 5    # UDZ
-    ws.column_dimensions["L"].width = 5    # RNF
-    ws.column_dimensions["M"].width = 20   # Días Creación→Cierre
-    ws.column_dimensions["N"].width = 20   # Días Descarga→Cierre
-    ws.column_dimensions["O"].width = 18   # Probado en QA por
-    ws.column_dimensions["P"].width = 18   # Fecha prueba QA
-    ws.column_dimensions["Q"].width = 18   # Aprobado por
-    ws.column_dimensions["R"].width = 18   # Fecha aprobación
-    ws.column_dimensions["S"].width = 26   # TA → AWS
-    ws.column_dimensions["T"].width = 26   # AID → AWS
-    ws.column_dimensions["U"].width = 26   # UDZ → AWS
+    #  AJUSTAR ANCHO COLUMNAS al contenido real (encabezado o dato más largo
+    #  de cada columna), no a un valor fijo — así si cambia el texto de un
+    #  encabezado o el largo típico de un dato, la celda se sigue viendo
+    #  completa sin volver a tocar este número a mano.
+    _autofit_columnas(ws)
 
     #  HOJA: EFECTIVIDAD
     ws_ef = wb.create_sheet("Efectividad")
@@ -280,9 +284,7 @@ def generar_excel_consolidado(resultados: list, guardar_en_carpeta: Path = None)
 
     _bandear_filas(ws_ef, 2, ef_row - 1)
 
-    # Anchos
-    for col, w in zip("ABCDEFGHIJKLM", [22, 10, 12, 14, 14, 10, 12, 12, 12, 14, 14, 14, 16]):
-        ws_ef.column_dimensions[col].width = w
+    _autofit_columnas(ws_ef)
 
     # Guardar a bytes
     output = BytesIO()

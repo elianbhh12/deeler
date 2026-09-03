@@ -55,6 +55,7 @@ MI_HELP     = ":material/help:"
 MI_APPROVE  = ":material/verified:"
 MI_GUIDE    = ":material/menu_book:"
 MI_CLOUD    = ":material/cloud_sync:"
+MI_SUMMARY  = ":material/summarize:"
 
 #  Estados de análisis (código lógico, separado del ícono de presentación)
 ESTADO_LISTO         = "LISTO"

@@ -9,7 +9,7 @@ from core.config import (
     ITERATION_PATH, ROOT_FOLDER, SPRINTS_FRECUENTES, _sprint_default_num,
     MI_DOWNLOAD, MI_ERROR, MI_OK, MI_WARNING, MI_INFO, MI_REFRESH, MI_FOLDER,
 )
-from core.ado_client import descargar_hu
+from core.ado_client import descargar_hu, refrescar_estados_ado
 from core.analysis import analizar_sprint
 from core.utils import sprint_display_name, abrir_carpeta
 
@@ -95,6 +95,11 @@ def render_paso1_paso2(sprints_locales):
             if st.button(_btn_label, width='stretch', type="primary", key="btn_analizar", disabled=not sprint_sel_name, icon=MI_REFRESH):
                 sprint_path = Path(ROOT_FOLDER) / sprint_sel_name
                 with st.spinner("Analizando TA, AID, UDZ..."):
+                    # Antes de analizar, refresca el estado real en ADO de las
+                    # HU ya descargadas — así una HU que se cerró en ADO
+                    # después de bajarla no se queda mostrando "activa" para
+                    # siempre (ver core/ado_client.refrescar_estados_ado).
+                    refrescar_estados_ado(sprint_path)
                     resultados_new = analizar_sprint(sprint_path)
                 st.toast(f"{len(resultados_new)} HU analizadas", icon=MI_OK)
                 st.session_state["resultados"]     = resultados_new
