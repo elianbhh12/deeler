@@ -7,9 +7,24 @@ from core.config import INK, WHITE, SURFACE, ACCENT, GREEN, PURPLE, ORANGE, RED
 def inject_scroll_restore():
     """Streamlit vuelve la página al tope en cada rerun (ej. al elegir otro
     TA/AID/UDZ en el selector, al aprobar, al subir a AWS) — se siente como
-    que "la página salta" o "se reinicia". Este script recuerda la posición
-    del scroll en sessionStorage del navegador y la restaura después de cada
-    rerun, para que el usuario no pierda el lugar donde estaba mirando.
+    que "la página salta" o "se reinicia". Este script recuerda dónde estaba
+    mirando el usuario y lo restaura después de cada rerun.
+
+    No alcanza con guardar el scrollTop en píxeles a secas: si el contenido
+    de ARRIBA del punto donde mirabas cambia de alto entre un rerun y el
+    siguiente (ej. el log de la consola de AWS creció, o una HU se ocultó de
+    la lista de subida masiva porque ya se subió), el mismo píxel absoluto
+    termina apuntando a otra parte de la página — se siente como "un salto"
+    aunque el scroll técnicamente se haya "restaurado" bien. Por eso se
+    ancla a un ELEMENTO real de la página (el primero que estaba tocando el
+    borde superior visible) en vez de a un número de píxeles: se guarda una
+    "firma" de ese elemento (su data-testid + un pedazo de su texto + un
+    contador para el caso de firmas repetidas, ej. varios botones
+    "Actualizar") y, al volver, se busca ese mismo elemento y se deja
+    exactamente en el mismo lugar de la pantalla donde estaba, sin importar
+    cuánto haya crecido o encogido lo que quedó por encima. Si el elemento
+    ya no existe (contenido totalmente distinto), cae al píxel absoluto
+    como respaldo — mejor que nada.
 
     Corre dentro de un iframe (así funciona st.iframe con HTML crudo), por
     eso opera sobre window.parent — es la ventana real de la app, no el
@@ -20,33 +35,103 @@ def inject_scroll_restore():
     st.iframe("""
     <script>
     (function() {
-        const KEY = "aid_dealer_scroll_y";
+        const KEY_Y = "aid_dealer_scroll_y";
+        const KEY_ANCLA = "aid_dealer_scroll_ancla";
+        // Elementos "anclables": los bloques de contenido/widgets más comunes
+        // de Streamlit — suficiente granularidad para no perder el lugar sin
+        // tener que anclar a cada nodo del DOM.
+        const SELECTOR = '[data-testid="stMarkdown"], [data-testid="stButton"], ' +
+            '[data-testid="stCheckbox"], [data-testid="stTextInput"], ' +
+            '[data-testid="stSelectbox"], [data-testid="stRadio"], ' +
+            '[data-testid="stExpander"], [data-testid="stAlert"], ' +
+            '[data-testid="stDataFrame"], [data-testid="stTabs"]';
+
         function contenedor() {
             try {
                 return window.parent.document.querySelector('[data-testid="stMain"]') || window.parent;
             } catch (e) { return null; }
         }
-        function restaurar() {
-            try {
-                const y = sessionStorage.getItem(KEY);
-                const el = contenedor();
-                if (y !== null && el) { el.scrollTo(0, parseInt(y, 10)); }
-            } catch (e) {}
+        function candidatos(doc) {
+            try { return Array.from(doc.querySelectorAll(SELECTOR)); } catch (e) { return []; }
         }
+        // "Firma" estable de un elemento: qué tipo de widget es + un pedazo
+        // de su texto — y un contador para distinguir firmas repetidas (ej.
+        // varios botones "Actualizar" en la misma pantalla).
+        function firma(el, contador) {
+            const tid = el.getAttribute('data-testid') || el.tagName;
+            const texto = (el.innerText || '').trim().slice(0, 50);
+            const base = tid + '|' + texto;
+            const n = contador[base] || 0;
+            contador[base] = n + 1;
+            return base + '#' + n;
+        }
+
         function guardar() {
             try {
                 const el = contenedor();
-                if (el) { sessionStorage.setItem(KEY, el.scrollTop || el.scrollY || 0); }
+                if (!el) return;
+                sessionStorage.setItem(KEY_Y, el.scrollTop || el.scrollY || 0);
+
+                const doc = window.parent.document;
+                const contRect = el.getBoundingClientRect();
+                const contador = {};
+                for (const nodo of candidatos(doc)) {
+                    const f = firma(nodo, contador);
+                    const offset = nodo.getBoundingClientRect().top - contRect.top;
+                    // Primer elemento cuyo borde superior toca (o pasó) el
+                    // techo visible del contenedor — es "lo que se está mirando".
+                    if (offset >= -4) {
+                        sessionStorage.setItem(KEY_ANCLA, JSON.stringify({firma: f, offset: offset}));
+                        return;
+                    }
+                }
+                sessionStorage.removeItem(KEY_ANCLA);
             } catch (e) {}
         }
+
+        function restaurar() {
+            try {
+                const el = contenedor();
+                if (!el) return;
+                const raw = sessionStorage.getItem(KEY_ANCLA);
+                if (raw) {
+                    const guardado = JSON.parse(raw);
+                    const doc = window.parent.document;
+                    const contador = {};
+                    for (const nodo of candidatos(doc)) {
+                        if (firma(nodo, contador) === guardado.firma) {
+                            const contRect = el.getBoundingClientRect();
+                            const actual = nodo.getBoundingClientRect().top - contRect.top;
+                            el.scrollTop = el.scrollTop + (actual - guardado.offset);
+                            return;
+                        }
+                    }
+                }
+                // Ancla no encontrada (contenido totalmente distinto): al
+                // menos vuelve al mismo píxel de antes.
+                const y = sessionStorage.getItem(KEY_Y);
+                if (y !== null) { el.scrollTo(0, parseInt(y, 10)); }
+            } catch (e) {}
+        }
+
         // Se reintenta un par de veces: el contenido nuevo puede seguir
         // creciendo de alto un instante después del primer render.
         setTimeout(restaurar, 30);
         setTimeout(restaurar, 150);
         setTimeout(restaurar, 400);
+
+        let guardarPendiente = false;
+        function guardarThrottled() {
+            if (guardarPendiente) return;
+            guardarPendiente = true;
+            (window.parent.requestAnimationFrame || window.requestAnimationFrame)(() => {
+                guardar();
+                guardarPendiente = false;
+            });
+        }
         try {
             const el = contenedor();
-            if (el) { el.addEventListener("scroll", guardar, { passive: true }); }
+            if (el) { el.addEventListener("scroll", guardarThrottled, { passive: true }); }
         } catch (e) {}
     })();
     </script>
@@ -922,7 +1007,14 @@ section[data-testid="stSidebar"] .stInfo {{
  border-radius: 12px;
  padding: 14px 16px;
  box-shadow: var(--shadow-sm);
- height: 100%;
+ /* TA/AID/UDZ tienen criterios y nombres de tabla de largo distinto, así
+    que cada tarjeta ocupa una cantidad de líneas distinta — sin un piso de
+    altura común, el botón "Subir..." de abajo queda a una altura diferente
+    en cada columna. Con esto, aunque el contenido varíe, siempre arranca
+    en el mismo lugar (ajustado al caso más corto — AID, el más largo, puede
+    superarlo sin problema, ahí sí manda su propio contenido).
+ */
+ min-height: 96px;
  box-sizing: border-box;
 }}
 
@@ -1082,18 +1174,6 @@ section[data-testid="stSidebar"] .stInfo {{
  font-size: 13px;
  font-weight: 700;
  color: var(--ink);
-}}
-
-/*  Vista coloreada del resumen para Resolution de ADO — el color de cada
-    línea va en línea (style="...") directo en ui/hu_detail.py, no acá, para
-    que sobreviva al copiar y pegar (ver _RESUMEN_COLORES). Acá solo el
-    contenedor. */
-.resumen-res-card {{
- background: var(--track);
- border: 1px solid var(--line);
- border-radius: 10px;
- padding: 12px 16px;
- margin-bottom: 10px;
 }}
 
 </style>

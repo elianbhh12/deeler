@@ -14,8 +14,6 @@ def run_app():
     header.render_header()
 
     sprints_locales = get_sprints()
-    hay_resultados = bool(st.session_state.get("resultados"))
-    header.render_stepper(sprints_locales, hay_resultados)
 
     ingest.render_paso1_paso2(sprints_locales)
     st.divider()

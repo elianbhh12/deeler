@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pytest
 
+import core.analysis as analysis
+
 
 #  Helpers de bajo nivel
 
@@ -288,3 +290,129 @@ def test_cargar_json_ruta_inexistente_no_revienta(appmod, tmp_path):
 
     ruta_larga = tmp_path / ("x" * 250 + ".json")
     assert appmod.cargar_json(ruta_larga) is None
+
+
+#  UDZ Crudos + Resultados como archivos separados: cada uno con su propia
+#  validación (no solo el "activo") — ver core.analysis._validar_udz_cruzadas
+#  y detectar_slots_udz, y el bug reportado: la consola de "Subir a AWS" no
+#  dejaba subir los 4 componentes (TA, AID, UDZ Crudos, UDZ Resultados) sin
+#  antes elegir cada UDZ como activo uno por uno.
+
+def _escribir_hu_dos_udz(base: Path, ta: dict, aid: dict, udz_crudos: dict, udz_resultados: dict,
+                          tipo_cambio: str = "DESPLIEGUE") -> Path:
+    hu = base / "9003-hu-test-dos-udz"
+    adj = hu / "adjuntos"
+    adj.mkdir(parents=True, exist_ok=True)
+    (hu / "metadata.json").write_text(json.dumps({
+        "id": 9003, "title": "HU de prueba — dos UDZ", "state": "Active",
+        "tipo_cambio": tipo_cambio, "downloaded_at": "2026-01-01T00:00:00",
+        "attachments": [],
+    }), encoding="utf-8")
+    (adj / "ta_test.json").write_text(json.dumps(ta), encoding="utf-8")
+    (adj / "aid_test.json").write_text(json.dumps(aid), encoding="utf-8")
+    (adj / "udz_crudos.json").write_text(json.dumps(udz_crudos), encoding="utf-8")
+    (adj / "udz_resultados.json").write_text(json.dumps(udz_resultados), encoding="utf-8")
+    return hu
+
+
+def _hu_dos_udz_bien_armada(tmp_path: Path) -> dict:
+    ta = {
+        "cu_name": "caso_dos_udz", "type": "prompts",
+        "kafka_output_topic": "documentreceivingmanagement.documentuploadedv1",
+    }
+    aid = {
+        "workflow_name": "aid-pdn-dosudz", "s3_path": "s3://bucket-pdn-dosudz/crudos/algo",
+        "use_case": "caso_dos_udz", "TYPE": "topic",
+        "workflow_variables": {"tecnologia": "AID"},
+        "workflow_definition": [{"STEP_NAME": "step1", "TYPE": "topic", "LAST_STEP": "False"}],
+    }
+    # CRUDOS (entrada): s3_path IDÉNTICO al de AID.
+    udz_crudos = {"item": {
+        "id": "aid-pdn-dosudz", "s3_path": "s3://bucket-pdn-dosudz/crudos/algo",
+        "require_transmission": "false", "emit_event": "true",
+    }}
+    # RESULTADOS (salida/transmisión): mismo path que AID pero con "crudos" -> "resultados".
+    udz_resultados = {"item": {
+        "id": "aid-pdn-dosudz", "s3_path": "s3://bucket-pdn-dosudz/resultados/algo",
+        "require_transmission": "true", "emit_event": "false",
+    }}
+    hu_folder = _escribir_hu_dos_udz(tmp_path, ta, aid, udz_crudos, udz_resultados)
+    return analysis.analizar_hu(hu_folder)
+
+
+def test_detectar_slots_udz_devuelve_dos_cuando_hay_crudos_y_resultados(appmod, tmp_path):
+    r = _hu_dos_udz_bien_armada(tmp_path)
+    slots = appmod.detectar_slots_udz(r)
+    assert {s["tipo"] for s in slots} == {"CRUDOS", "RESULTADOS"}
+    assert sum(1 for s in slots if s["es_activo"]) == 1, "solo uno de los dos debe quedar como activo"
+
+
+def test_udz_no_activo_queda_validado_por_separado(appmod, tmp_path):
+    """El bug reportado: sin esto, el UDZ que no está 'activo' (elegido en el
+    selector 'UDZ a usar') no tenía ninguna validación propia, y la consola
+    de AWS no dejaba subirlo sin antes cambiar el selector. Ahora
+    'validaciones_udz_extra' trae, para el otro archivo, las mismas 4
+    validaciones cruzadas que el activo tiene en 'validaciones'."""
+    r = _hu_dos_udz_bien_armada(tmp_path)
+
+    assert "validaciones_udz_extra" in r
+    assert len(r["validaciones_udz_extra"]) == 1, "un solo slot queda 'extra' (el que no es el activo)"
+
+    _clave_extra = next(iter(r["validaciones_udz_extra"]))
+    assert _clave_extra in ("udz_crudos", "udz_resultados")
+    _val_extra = r["validaciones_udz_extra"][_clave_extra]
+
+    for _campo in ("s3_path", "workflow_vs_id", "ambiente_workflow_id", "udz_transmisiones"):
+        assert _campo in _val_extra, f"falta '{_campo}' en la validación del UDZ no-activo"
+        assert _val_extra[_campo]["ok"] is True, (
+            f"'{_campo}' del UDZ no-activo debería dar OK con esta HU bien armada — {_val_extra[_campo]}"
+        )
+
+    # Y el activo (en "validaciones", el lugar de siempre) también OK.
+    for _campo in ("s3_path", "workflow_vs_id", "ambiente_workflow_id", "udz_transmisiones"):
+        assert r["validaciones"][_campo]["ok"] is True, (
+            f"'{_campo}' del UDZ activo debería dar OK con esta HU bien armada — {r['validaciones'][_campo]}"
+        )
+
+
+def test_udz_resultados_s3_path_no_exige_igualdad_estricta_con_aid(appmod, tmp_path):
+    """RESULTADOS es la excepción: su s3_path no es igual al de AID a
+    propósito ("crudos" -> "resultados" en el mismo lugar de la ruta) — la
+    prueba de arriba ya lo confirma indirectamente, esta lo deja explícito."""
+    r = _hu_dos_udz_bien_armada(tmp_path)
+    slots = {s["tipo"]: s for s in appmod.detectar_slots_udz(r)}
+    resultados_activo = slots["RESULTADOS"]["es_activo"]
+
+    val_resultados = (
+        r["validaciones"] if resultados_activo
+        else r["validaciones_udz_extra"]["udz_resultados"]
+    )
+    assert val_resultados["s3_path"]["udz"] != val_resultados["s3_path"]["aid"], (
+        "el s3_path de RESULTADOS no debería ser idéntico al de AID"
+    )
+    assert val_resultados["s3_path"]["ok"] is True
+
+
+def test_udz_con_un_solo_archivo_no_genera_validaciones_extra(appmod, tmp_path):
+    """Backward-compat: con un solo UDZ (el caso normal, sin split
+    crudos/resultados) no debe aparecer 'validaciones_udz_extra' — el
+    comportamiento de siempre no cambia."""
+    ta = {
+        "cu_name": "caso_ok", "type": "prompts",
+        "kafka_output_topic": appmod.KAFKA_TOPIC_REQUERIDO,
+    }
+    aid = {
+        "workflow_name": "aid-pdn-ok", "s3_path": "s3://bucket-pdn-ok/resultados",
+        "use_case": "caso_ok", "TYPE": "topic",
+        "workflow_variables": {"tecnologia": "AID"},
+        "workflow_definition": [{"STEP_NAME": "step1", "TYPE": "topic", "LAST_STEP": "False"}],
+    }
+    udz = {"item": {
+        "id": "aid-pdn-ok", "s3_path": "s3://bucket-pdn-ok/resultados",
+        "require_transmission": "true", "emit_event": "false",
+    }}
+    hu_folder = _escribir_hu_minima(tmp_path, ta, aid, udz, "DESPLIEGUE")
+
+    r = appmod.analizar_hu(hu_folder)
+
+    assert "validaciones_udz_extra" not in r

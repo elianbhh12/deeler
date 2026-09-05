@@ -6,8 +6,8 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-from core.config import ROOT_FOLDER, ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, ESTADO_LISTO, ESTADO_ERROR, MI_FOLDER, MI_ERROR
-from core.analysis import get_estado_code
+from core.config import ROOT_FOLDER, ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, ESTADO_LISTO, ESTADO_ERROR, MI_FOLDER, MI_ERROR, MI_SEARCH, MI_INFO
+from core.analysis import get_estado_code, obtener_estado_pdn_real
 
 
 def render_excel_card():
@@ -54,7 +54,40 @@ def render_excel_card():
 
 
 def render_tabla_resumen(resultados):
+    #  Filtros — con pocas HU no hacía falta, pero apenas crece el sprint (o
+    #  se quiere ubicar una HU puntual) no había forma de acotar la tabla más
+    #  que scrolleando a ojo.
+    col_busca, col_val = st.columns([0.65, 0.35])
+    with col_busca:
+        texto_busqueda = st.text_input(
+            "Buscar", placeholder="Buscar por ID o palabra del título...",
+            label_visibility="collapsed", key="backlog_busqueda", icon=MI_SEARCH,
+        )
+    with col_val:
+        filtro_validacion = st.selectbox(
+            "Validación", ["Todas", "Listo", "Con errores", "Incompleto"],
+            label_visibility="collapsed", key="backlog_filtro_validacion",
+        )
+
     filtered_resultados = resultados
+
+    if texto_busqueda.strip():
+        _q = texto_busqueda.strip().lower()
+        filtered_resultados = [
+            r for r in filtered_resultados
+            if _q in str(r.get("hu_id", "")).lower() or _q in r.get("hu_title", "").lower()
+        ]
+
+    if filtro_validacion != "Todas":
+        _mapa_validacion = {"Listo": ESTADO_LISTO, "Con errores": ESTADO_ERROR}
+        if filtro_validacion in _mapa_validacion:
+            filtered_resultados = [r for r in filtered_resultados if get_estado_code(r) == _mapa_validacion[filtro_validacion]]
+        else:  # "Incompleto" = todo lo que no es ni Listo ni Con errores (INCOMPLETO/SIN_METADATA)
+            filtered_resultados = [r for r in filtered_resultados if get_estado_code(r) not in (ESTADO_LISTO, ESTADO_ERROR)]
+
+    if not filtered_resultados:
+        st.info("Ninguna HU coincide con estos filtros.", icon=MI_INFO)
+        return
 
     # Crear tabla como DataFrame simple
     tabla_data = []
@@ -82,11 +115,12 @@ def render_tabla_resumen(resultados):
         udz_ok = _arc_badge("UDZ")
         rnf_ok = ICON_OK if "NO" not in arcs.get("RNF", "") else ICON_ERROR
 
-        #  Desplegado en PDN — hecho manual registrado desde el detalle de la
-        #  HU (posterior a la aprobación), no algo que se infiera del análisis.
-        _desplegado_pdn_por = r.get("desplegado_pdn_por")
-        if _desplegado_pdn_por:
-            desplegado_badge = f"{ICON_OK} {(r.get('desplegado_pdn_en') or '')[:10]}"
+        #  Desplegado en PDN — se infiere de subidas reales a AWS (TA/AID/UDZ
+        #  ya en la tabla PDN), no de un checkbox manual. Ver
+        #  core.analysis.obtener_estado_pdn_real.
+        _pdn_real = obtener_estado_pdn_real(r)
+        if _pdn_real["desplegado"]:
+            desplegado_badge = f"{ICON_OK} {(_pdn_real['en'] or '')[:10]}"
         else:
             desplegado_badge = ICON_NA
 
@@ -98,14 +132,18 @@ def render_tabla_resumen(resultados):
         _est_short = f"{ICON_OK} Listo" if _est_code == ESTADO_LISTO else (f"{ICON_ERROR} Errores" if _est_code == ESTADO_ERROR else f"{ICON_WARNING} Incompleto")
         tabla_data.append({
             "ID": r.get('hu_id','?'),
-            "Título": r.get('hu_title','?')[:45],
+            "Título": r.get('hu_title','?'),
             "Tipo": r.get('tipo_cambio', '?'),
             "RNF": rnf_ok,
             "TA": ta_ok,
             "AID": aid_ok,
             "UDZ": udz_ok,
+            # "Validación" = pasó las 12 validaciones críticas; distinto de
+            # "Desplegado PDN" = la HU ya terminó de verdad (subió a PDN).
+            # Una HU puede estar en Validación=Listo y aun así seguir
+            # pendiente hasta que se despliegue.
+            "Validación": _est_short,
             "Desplegado PDN": desplegado_badge,
-            "Estado": _est_short
         })
 
     if tabla_data:
@@ -124,8 +162,11 @@ def render_tabla_resumen(resultados):
                 return "background-color:#F5F5F4;color:#78716C"
             return ""
 
-        _estilo = df_tabla.style.map(_color_celda, subset=["RNF", "TA", "AID", "UDZ", "Desplegado PDN", "Estado"])
-        st.dataframe(_estilo, width='stretch', hide_index=True)
+        _estilo = df_tabla.style.map(_color_celda, subset=["RNF", "TA", "AID", "UDZ", "Validación", "Desplegado PDN"])
+        st.dataframe(
+            _estilo, width='stretch', hide_index=True,
+            column_config={"Título": st.column_config.TextColumn("Título", width="large")},
+        )
 
         #  Alertas de RNF faltante
         sin_rnf = [r.get('hu_id') for r in filtered_resultados if not r.get('rnf_path')]

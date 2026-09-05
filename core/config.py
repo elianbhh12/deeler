@@ -129,7 +129,7 @@ AWS_TABLAS = {
     "pdn": {
         "aid": os.getenv("AWS_TABLA_AID_PDN", "nu0087001-aid-r2-pdn-dynamo-config-control"),
         "ta":  os.getenv("AWS_TABLA_TA_PDN",  "nu0600001-plataforma-ia-pdn-text-analyzer-table"),
-        "udz": os.getenv("AWS_TABLA_UDZ_PDN", "nu6490001-udz-pdnevents-manager-table"),
+        "udz": os.getenv("AWS_TABLA_UDZ_PDN", "nu6490001-udz-pdn-events-manager-table"),
     },
 }
 

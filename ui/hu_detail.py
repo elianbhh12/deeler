@@ -18,9 +18,9 @@ import streamlit as st
 from core.config import (
     ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, ESTADO_ICON, ESTADO_LISTO, ESTADO_ERROR,
     KAFKA_TOPIC_REQUERIDO, ROOT_FOLDER, VALIDATION_KEYS, AID_TYPE_VALIDOS,
-    MI_APPROVE, MI_ERROR, MI_FILE, MI_GUIDE, MI_INFO, MI_OK, MI_REFRESH, MI_WARNING, MI_SUMMARY,
+    MI_APPROVE, MI_GUIDE, MI_OK, MI_REFRESH, MI_WARNING, MI_SUMMARY, MI_INFO, MI_SEARCH,
 )
-from core.analysis import get_estado_code, cargar_json, clasificar_udz_desde_json, normalizar_s3, _val_ok, analizar_hu, detectar_slots_udz
+from core.analysis import get_estado_code, cargar_json, clasificar_udz_desde_json, normalizar_s3, _val_ok, analizar_hu, detectar_slots_udz, obtener_estado_pdn_real
 from core.utils import abrir_archivo, obtener_usuario_actual
 from core.guide import mostrar_guia_tipo
 
@@ -43,10 +43,11 @@ def _generar_resumen_resolution(r: dict) -> tuple:
     # cada uno tiene su propio s3_path y no alcanza con mostrar uno solo.
     _slots_udz = detectar_slots_udz(r)
 
-    # Solo relevantes al cerrar en PDN, no durante pruebas en QA.
+    # Referencia técnica solo una vez que la HU YA se subió de verdad a PDN
+    # (no apenas se detecta que los archivos son "de PDN" por su s3_path) —
+    # antes de subir no hay nada que referenciar todavía.
     _val = r.get("validaciones", {})
-    _ambiente = (_val.get("ambiente", {}).get("ambiente") or "").upper()
-    if _ambiente == "PDN":
+    if obtener_estado_pdn_real(r)["desplegado"]:
         _cu_name = _val.get("ta_cu_name", {}).get("cu_name") or ""
         _aid_s3  = _val.get("s3_path", {}).get("aid") or ""
         _hay_ref = bool(_cu_name or _aid_s3)
@@ -79,7 +80,8 @@ def _generar_resumen_resolution(r: dict) -> tuple:
         _qa_en = (r.get("probado_qa_en") or "")[:16].replace("T", " ")
         lineas.append(f"✅ Probado en QA — {_qa_por} — {_qa_en}")
     else:
-        lineas.append("❌ No se registró prueba en QA")
+        # ➖ (no ❌): probar en QA es opcional, no un requisito que falte.
+        lineas.append("➖ No se registró prueba en QA")
 
     def _linea_aws(clave, nombre, hay_archivo):
         if not hay_archivo:
@@ -105,14 +107,9 @@ def _generar_resumen_resolution(r: dict) -> tuple:
         for _s in _slots_udz:
             _linea_aws(f"udz_{_s['tipo'].lower()}", _nombres.get(_s["tipo"], "UDZ"), True)
 
-    lineas.append("")
-    _desp_por = r.get("desplegado_pdn_por")
-    if _desp_por:
-        _desp_en = (r.get("desplegado_pdn_en") or "")[:16].replace("T", " ")
-        lineas.append(f"✅ Desplegado en PDN 🚀 — {_desp_por} — {_desp_en}")
-    else:
-        lineas.append("❌ Todavía no se marcó como desplegado en PDN")
-
+    # No hace falta una línea aparte de "Desplegado en PDN": cada línea de
+    # arriba ya dice a qué ambiente se subió cada componente — si todas dicen
+    # PDN, la HU está desplegada; no hay un hecho adicional que registrar.
     completo = not any(l.startswith("❌") for l in lineas)
     return "\n".join(lineas), completo
 
@@ -123,8 +120,11 @@ def _generar_resumen_resolution(r: dict) -> tuple:
 _RESUMEN_COLORES = {"ok": "#065F46", "err": "#991B1B", "na": "#78716C"}
 
 
-def _render_resumen_coloreado(texto: str):
-    """Vista con color por línea del resumen (ver _RESUMEN_COLORES)."""
+def _resumen_filas_html(texto: str) -> str:
+    """Arma las filas HTML coloreadas del resumen (ver _RESUMEN_COLORES) —
+    separado de la tarjeta que las envuelve para poder reusarlas tanto en la
+    vista normal como en el componente con botón de copiar (mismo HTML en
+    los dos lados, para que "lo que se ve" y "lo que se copia" sean lo mismo)."""
     filas = []
     for linea in texto.split("\n"):
         if not linea:
@@ -140,6 +140,15 @@ def _render_resumen_coloreado(texto: str):
             )
         elif linea.startswith("HU "):
             filas.append(f'<div style="font-weight:800;font-size:13.5px;color:#2C2A29">{html.escape(linea)}</div>')
+        elif linea.startswith("Estado de Flujo:"):
+            # Lo primero que hay que ver al abrir el resumen — se destaca más
+            # que el resto (más grande, en negrita, coloreado según el estado).
+            _valor = linea.split(":", 1)[1].strip()
+            _color_estado = {"LISTO": "#065F46", "CON ERRORES": "#991B1B"}.get(_valor, "#92400E")
+            filas.append(
+                f'<div style="font-size:14.5px;font-weight:800;margin:2px 0 4px;color:{_color_estado}">'
+                f'Estado de Flujo: {html.escape(_valor)}</div>'
+            )
         elif linea.startswith("🔗"):
             # Datos técnicos de referencia (solo aparecen en PDN).
             filas.append(
@@ -148,7 +157,67 @@ def _render_resumen_coloreado(texto: str):
             )
         else:
             filas.append(f'<div style="font-size:12px;color:#78716C;margin-bottom:4px">{html.escape(linea)}</div>')
-    st.markdown(f'<div class="resumen-res-card">{"".join(filas)}</div>', unsafe_allow_html=True)
+    return "".join(filas)
+
+
+def _render_resumen_copiable(texto: str):
+    """Misma tarjeta coloreada de siempre, pero con un botón "Copiar" que usa
+    el portapapeles del navegador (Clipboard API) para copiar tanto el HTML
+    con formato y colores (para pegar en el campo Resolution de ADO, que es
+    texto enriquecido) como el texto plano (para cualquier otro destino) —
+    sin necesidad de un bloque de texto aparte ni de seleccionar a mano.
+
+    Va en un iframe (st.iframe con HTML crudo, no una URL) porque un
+    <script> dentro de st.markdown no se ejecuta — es la única forma de
+    correr JS real en Streamlit. height="content" (auto) no reajusta bien
+    cuando el contenido cambia de tamaño entre renders (deja un espacio en
+    blanco enorme si el resumen se acorta) — se calcula el alto a mano según
+    la cantidad de líneas, como antes."""
+    filas_html = _resumen_filas_html(texto)
+    _n_lineas = texto.count("\n") + 1
+    _altura = 60 + _n_lineas * 21
+
+    _html_para_portapapeles = f'<div style="font-family:-apple-system,Segoe UI,sans-serif">{filas_html}</div>'
+    _html_js = json.dumps(_html_para_portapapeles)
+    _texto_js = json.dumps(texto)
+
+    st.iframe(f"""
+    <div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;position:relative">
+        <button id="btn-copiar-resumen" style="position:absolute;top:10px;right:10px;z-index:1;
+            background:#2C2A29;color:#fff;border:none;border-radius:6px;padding:5px 12px;
+            font-size:11.5px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:5px">
+            <span id="icono-copiar">⧉</span><span id="texto-copiar">Copiar</span>
+        </button>
+        <div style="background:#F5F5F4;border:1px solid #E7E5E4;border-radius:10px;padding:12px 16px;padding-right:90px">
+            {filas_html}
+        </div>
+    </div>
+    <script>
+        const boton = document.getElementById("btn-copiar-resumen");
+        boton.addEventListener("click", async () => {{
+            const html = {_html_js};
+            const texto = {_texto_js};
+            try {{
+                await navigator.clipboard.write([
+                    new ClipboardItem({{
+                        "text/html": new Blob([html], {{type: "text/html"}}),
+                        "text/plain": new Blob([texto], {{type: "text/plain"}}),
+                    }})
+                ]);
+            }} catch (e) {{
+                // Navegadores que no soportan ClipboardItem con varios tipos
+                // (o sin permiso de portapapeles) — al menos el texto plano.
+                await navigator.clipboard.writeText(texto);
+            }}
+            document.getElementById("texto-copiar").innerText = "Copiado";
+            document.getElementById("icono-copiar").innerText = "✓";
+            setTimeout(() => {{
+                document.getElementById("texto-copiar").innerText = "Copiar";
+                document.getElementById("icono-copiar").innerText = "⧉";
+            }}, 1800);
+        }});
+    </script>
+    """, height=_altura)
 
 
 def render_hu_detail(resultados, sprint_activo):
@@ -181,11 +250,44 @@ def render_hu_detail(resultados, sprint_activo):
         st.warning("No hay HU para mostrar con los filtros seleccionados")
         st.stop()
 
+    # Mismo filtro que la tabla del backlog (buscar + validación) — para
+    # ubicar rápido una HU puntual sin tener que scrollear el selectbox
+    # entero cuando el sprint tiene muchas.
+    col_busca_hu, col_val_hu = st.columns([0.65, 0.35])
+    with col_busca_hu:
+        _texto_busqueda_hu = st.text_input(
+            "Buscar HU", placeholder="Buscar por ID o palabra del título...",
+            label_visibility="collapsed", key="hu_detail_busqueda", icon=MI_SEARCH,
+        )
+    with col_val_hu:
+        _filtro_validacion_hu = st.selectbox(
+            "Validación", ["Todas", "Listo", "Con errores", "Incompleto"],
+            label_visibility="collapsed", key="hu_detail_filtro_validacion",
+        )
+
+    _resultados_filtrados = resultados
+    if _texto_busqueda_hu.strip():
+        _q = _texto_busqueda_hu.strip().lower()
+        _resultados_filtrados = [
+            r for r in _resultados_filtrados
+            if _q in str(r.get("hu_id", "")).lower() or _q in r.get("hu_title", "").lower()
+        ]
+    if _filtro_validacion_hu != "Todas":
+        _mapa_validacion_hu = {"Listo": ESTADO_LISTO, "Con errores": ESTADO_ERROR}
+        if _filtro_validacion_hu in _mapa_validacion_hu:
+            _resultados_filtrados = [r for r in _resultados_filtrados if get_estado_code(r) == _mapa_validacion_hu[_filtro_validacion_hu]]
+        else:  # "Incompleto" = todo lo que no es ni Listo ni Con errores
+            _resultados_filtrados = [r for r in _resultados_filtrados if get_estado_code(r) not in (ESTADO_LISTO, ESTADO_ERROR)]
+
+    if not _resultados_filtrados:
+        st.info("Ninguna HU coincide con estos filtros.", icon=MI_INFO)
+        st.stop()
+
     # El selectbox persiste el hu_id como valor, no el label armado (que
     # trae un ícono de estado que puede cambiar al re-analizar) — si
     # persistiera el label, un cambio de ícono deja la opción anterior fuera
     # de la lista nueva y Streamlit vuelve en silencio a la primera HU.
-    hu_por_id = {r.get("hu_id"): r for r in resultados}
+    hu_por_id = {r.get("hu_id"): r for r in _resultados_filtrados}
 
     # Red de seguridad extra ante el caso reportado de que la selección
     # salta a la primera HU tras ciertas acciones (guardar credenciales AWS,
@@ -311,16 +413,33 @@ def render_hu_detail(resultados, sprint_activo):
             c = color if ok else "#DC2626"
             return f'<span class="hu-chip" style="border-color:{c};color:{c}" title="{name}"><b>{key}</b> {icon} <small style="font-weight:400;color:#6B7280">{name[:28]}</small></span>'
 
+        # Ambiente y Estado son lo primero que hay que mirar de un vistazo,
+        # por eso van coloreados — pero como chips del mismo tamaño que el
+        # resto (no una insignia aparte y gigante), para que se lea como una
+        # sola fila prolija, no como dos estilos distintos peleando entre sí.
+        _amb_colores = {
+            "PDN": ("#FEE2E2", "#B91C1C", "#FCA5A5"),
+            "QA":  ("#FEF3C7", "#92400E", "#FDE68A"),
+        }
+        _amb_bg, _amb_txt, _amb_border = _amb_colores.get(amb_h.upper(), ("#F5F5F4", "#57534E", "#E7E5E4"))
+
+        _estado_code_h = get_estado_code(r)
+        _estado_colores = {
+            ESTADO_LISTO: ("#D1FAE5", "#065F46", "#6EE7B7"),
+            ESTADO_ERROR: ("#FEE2E2", "#991B1B", "#FCA5A5"),
+        }
+        _est_bg, _est_txt, _est_border = _estado_colores.get(_estado_code_h, ("#FEF3C7", "#92400E", "#FDE68A"))
+
         col_header, col_refresh = st.columns([0.85, 0.15], vertical_alignment="center")
         with col_header:
             st.markdown(f"""
             <div class="hu-detail-header">
                 <div style="width:100%">
-                    <div class="hu-detail-id">HU {r.get('hu_id')}  {tipo_h}</div>
+                    <div class="hu-detail-id">HU {r.get('hu_id')} · {tipo_h}</div>
                     <div class="hu-detail-title">{r.get('hu_title','')}</div>
                     <div class="hu-detail-chips">
-                        <span class="hu-chip">Estado <b>{r.get('estado_general','')}</b></span>
-                        <span class="hu-chip">Ambiente <b>{amb_h}</b></span>
+                        <span class="hu-chip" style="background:{_amb_bg};color:{_amb_txt};border-color:{_amb_border};font-weight:800">Ambiente {amb_h}</span>
+                        <span class="hu-chip" style="background:{_est_bg};color:{_est_txt};border-color:{_est_border};font-weight:800">{r.get('estado_general','')}</span>
                         {_arc_chip('TA',  '#0369A1')}
                         {_arc_chip('AID', '#7C3AED')}
                         {_arc_chip('UDZ', '#065F46')}
@@ -363,8 +482,11 @@ def render_hu_detail(resultados, sprint_activo):
         if _qa_vigente:
             st.success(f"Probado en QA por {_qa_por} — {_qa_en_fmt}", icon=MI_APPROVE)
         else:
+            # Opcional: no todas las HU pasan por una prueba en QA antes de
+            # PDN — por eso nunca bloquea el despliegue, solo deja constancia
+            # de que alguien la probó, para quien lo necesite.
             _puede_marcar_qa = _estado_code_hoy == ESTADO_LISTO
-            if st.button("Marcar como probado en QA", key=f"qa_{r.get('hu_id')}", width='stretch',
+            if st.button("Marcar como probado en QA (opcional)", key=f"qa_{r.get('hu_id')}", width='stretch',
                          icon=MI_APPROVE, disabled=not _puede_marcar_qa,
                          help=None if _puede_marcar_qa else "Solo se puede marcar si el estado actual es LISTO"):
                 if hu_folder:
@@ -385,40 +507,25 @@ def render_hu_detail(resultados, sprint_activo):
                     st.toast("QA registrado", icon=MI_OK)
                     st.rerun()
 
-        # Hecho histórico (una vez desplegado, queda desplegado) — solo se
-        # puede marcar mientras la prueba en QA esté vigente.
-        _desplegado_pdn_por = r.get("desplegado_pdn_por")
-        if _desplegado_pdn_por:
-            _desplegado_pdn_en_fmt = (r.get("desplegado_pdn_en") or "")[:16].replace("T", " ")
-            st.success(f"Desplegado en PDN por {_desplegado_pdn_por} — {_desplegado_pdn_en_fmt}", icon=MI_APPROVE)
-        elif _qa_vigente:
-            _pdn_deploy_confirmado = st.checkbox(
-                "Confirmo que esta HU ya se desplegó en PDN",
-                key=f"pdn_deploy_check_{r.get('hu_id')}",
+        # "Desplegado en PDN" ya no es un checkbox que cualquiera marca: se
+        # calcula solo, mirando si TA/AID/UDZ realmente se subieron con éxito
+        # a la tabla de PDN (consola "Subir a AWS", más abajo) — ver
+        # core.analysis.obtener_estado_pdn_real.
+        _pdn_real = obtener_estado_pdn_real(r)
+        if _pdn_real["desplegado"]:
+            _pdn_en_fmt = (_pdn_real["en"] or "")[:16].replace("T", " ")
+            st.success(f"Desplegado en PDN — confirmado por subida real a AWS · {_pdn_real['por']} — {_pdn_en_fmt}", icon=MI_APPROVE)
+        else:
+            st.info(
+                "Todavía no está desplegado en PDN — se marca solo cuando TA/AID/UDZ se suban con éxito "
+                "al ambiente PDN en la consola 'Subir a AWS' (más abajo).",
+                icon=MI_INFO,
             )
-            if st.button("Marcar como desplegado en PDN", key=f"desplegar_pdn_{r.get('hu_id')}", width='stretch',
-                         icon=MI_APPROVE, disabled=not _pdn_deploy_confirmado,
-                         help=None if _pdn_deploy_confirmado else "Marcá primero la confirmación"):
-                if hu_folder:
-                    _ahora = datetime.now().isoformat()
-                    _usuario = obtener_usuario_actual()
-                    r["desplegado_pdn_por"] = _usuario
-                    r["desplegado_pdn_en"] = _ahora
-                    out_path = hu_folder / "analisis" / "analisis_tecnico.json"
-                    out_path.write_text(json.dumps(r, indent=2, ensure_ascii=False), encoding="utf-8")
-                    _res = st.session_state.get("resultados", [])
-                    for _i, _x in enumerate(_res):
-                        if str(_x.get("hu_id")) == str(r.get("hu_id")):
-                            _res[_i] = r
-                            break
-                    st.session_state["resultados"] = _res
-                    st.toast("Despliegue en PDN registrado", icon=MI_OK)
-                    st.rerun()
 
         _texto_resumen, _completo_resumen = _generar_resumen_resolution(r)
 
         with st.expander("Resumen para Resolution de ADO", expanded=False, icon=MI_OK if _completo_resumen else MI_SUMMARY):
-            _render_resumen_coloreado(_texto_resumen)
+            _render_resumen_copiable(_texto_resumen)
 
         rnf_path_str = r.get("rnf_path")
         rnf_path = Path(rnf_path_str) if rnf_path_str else None
@@ -953,49 +1060,3 @@ def render_hu_detail(resultados, sprint_activo):
             """, unsafe_allow_html=True)
 
         st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
-
-        with st.expander("Archivos y adjuntos", expanded=False, icon=MI_FILE):
-            arcs = r.get("archivos", {})
-            st.markdown("**Componentes técnicos**")
-
-            for comp, archivo in arcs.items():
-                ok = "NO" not in archivo
-                if ok:
-                    st.markdown(f"{ICON_OK} **{comp}**: `{archivo}`")
-                else:
-                    st.error(f"**{comp}**: NO ENCONTRADO", icon=MI_ERROR)
-
-            configs_sin_tipo = r.get("configs_sin_tipo", [])
-            if configs_sin_tipo:
-                st.markdown("---")
-                st.markdown("**Archivos con nombre genérico detectados**")
-                for cfg in configs_sin_tipo:
-                    nombre = cfg["nombre"]
-                    tipo   = cfg["tipo_inferido"]
-                    auto   = cfg.get("auto_asignado", False)
-                    _color = {"AID": "#7C3AED", "TA": "#0369A1", "UDZ": "#065F46"}.get(tipo, "#92400E")
-                    _estado = f"{ICON_OK} Auto-asignado como componente" if auto else f"{ICON_WARNING} Tipo no reconocido — revisa manualmente"
-                    _nota = (f"Fue asignado automáticamente al slot <strong>{tipo}</strong> para análisis."
-                             if auto else
-                             "No se pudo determinar el tipo. Renombra el archivo con <code>ta_</code>, <code>aid_</code> o <code>udz_</code> en el nombre.")
-                    st.markdown(f"""
-                    <div style="border:1px solid {_color};border-radius:6px;padding:10px 14px;margin:6px 0;background:#FAFAFA">
-                        <div style="font-weight:600;font-size:13px"><code>{nombre}</code>
-                            <span style="font-size:11px;color:{_color};margin-left:8px">{_estado} <strong>{tipo if auto else ''}</strong></span>
-                        </div>
-                        <div style="font-size:11px;color:#6B7280;margin-top:5px">{_nota}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-            atts = r.get("attachments", [])
-            if atts:
-                st.markdown(f"**Adjuntos descargados ({len(atts)})**")
-                for a in atts:
-                    icon = ICON_OK if a.get("downloaded") else ICON_ERROR
-                    status = "Descargado" if a.get("downloaded") else "Error"
-                    st.markdown(f"{icon} **{a.get('name','')}** — {status}")
-            else:
-                st.info("No hay adjuntos descargados", icon=MI_INFO)
-
-            if r.get("downloaded_at"):
-                st.markdown(f"**Fecha de descarga:** {r['downloaded_at'][:19]}")

@@ -229,6 +229,42 @@ def detectar_slots_udz(r: dict) -> list:
     return slots
 
 
+def obtener_estado_pdn_real(r: dict) -> dict:
+    """Si la HU realmente quedó desplegada en PDN — no un checkbox que
+    cualquiera puede marcar, sino el hecho de que TODOS sus componentes
+    presentes (TA/AID/UDZ, incluyendo ambos slots si hay crudos+resultados
+    separados) ya se subieron con éxito a la tabla de PDN (ver
+    ui.aws_console._persistir_subida_aws, que graba `{clave}_aws_ambiente`
+    y `{clave}_aws_por` en cada subida real).
+
+    Devuelve {"desplegado": bool, "por": str|None, "en": str|None} — "por"/"en"
+    son de la última subida entre los componentes (quien cerró el despliegue)."""
+    componentes = []
+    if r.get("ta_activo"):
+        componentes.append("ta")
+    if r.get("aid_activo"):
+        componentes.append("aid")
+    slots = detectar_slots_udz(r)
+    for s in slots:
+        if not s["archivo"]:
+            continue
+        clave = f"udz_{s['tipo'].lower()}" if (s["tipo"] and len(slots) > 1) else "udz"
+        componentes.append(clave)
+
+    if not componentes:
+        return {"desplegado": False, "por": None, "en": None}
+
+    subidas = []
+    for clave in componentes:
+        if r.get(f"{clave}_aws_ambiente") != "pdn" or not r.get(f"{clave}_aws_por"):
+            return {"desplegado": False, "por": None, "en": None}
+        subidas.append((r.get(f"{clave}_aws_en") or "", r.get(f"{clave}_aws_por")))
+
+    subidas.sort()
+    _en, _por = subidas[-1]
+    return {"desplegado": True, "por": _por, "en": _en}
+
+
 def buscar_archivos(hu_folder: Path):
     adj = hu_folder / "adjuntos"
     res = {"ta": None, "aid": None, "udz": None, "ta_files": [], "aid_files": [], "udz_files": [], "configs_sin_tipo": []}
@@ -310,6 +346,87 @@ def buscar_rnf(hu_folder: Path):
             if "rnf" in n:
                 return f
     return None
+
+
+def _validar_udz_cruzadas(aid: dict, wf: str, aid_s3: str, udz: dict, es_despliegue: bool) -> dict:
+    """Las 4 validaciones que cruzan AID con un UDZ puntual (s3_path,
+    workflow_vs_id, ambiente_workflow_id, udz_transmisiones). Factorizado
+    para poder correrlo tanto sobre el UDZ activo (las validaciones
+    "oficiales" de la HU) como sobre el otro archivo UDZ cuando la HU trae
+    crudos y resultados por separado — así ambos quedan realmente validados
+    y no hace falta alternar cuál está activo para poder subir los dos a AWS."""
+    _udz_item = udz.get("item") if udz else None
+    _udz_root = udz if isinstance(udz, dict) else {}
+    udz_s3 = (_udz_item.get("s3_path", "") if isinstance(_udz_item, dict) else "") or _udz_root.get("s3_path", "")
+    udz_require_transmission = (_udz_item.get("require_transmission") if isinstance(_udz_item, dict) else None)
+    if udz_require_transmission is None:
+        udz_require_transmission = _udz_root.get("require_transmission")
+    udz_emit_event = (_udz_item.get("emit_event") if isinstance(_udz_item, dict) else None)
+    if udz_emit_event is None:
+        udz_emit_event = _udz_root.get("emit_event")
+    udz_id = (_udz_item.get("id", "") if isinstance(_udz_item, dict) else "") or _udz_root.get("id", "")
+
+    # s3_path: CRUDOS exige ruta idéntica a AID; RESULTADOS exige la misma
+    # ruta con "crudos" -> "resultados" (ver nota en analizar_hu original).
+    _udz_tipo_s3 = clasificar_udz_desde_json(udz) if udz else "DESCONOCIDO"
+    s3_na = not (aid_s3 and udz_s3)
+    if aid_s3 and udz_s3:
+        if _udz_tipo_s3 == "RESULTADOS":
+            s3_esperado = normalizar_s3(aid_s3).replace("crudos", "resultados")
+        else:
+            s3_esperado = normalizar_s3(aid_s3)
+        s3_ok = s3_esperado == normalizar_s3(udz_s3)
+    else:
+        s3_ok = not es_despliegue
+        s3_esperado = normalizar_s3(aid_s3) if aid_s3 else ""
+    val_s3_path = {
+        "ok": s3_ok, "na": s3_na and not es_despliegue,
+        "aid": aid_s3, "udz": udz_s3, "tipo_udz": _udz_tipo_s3, "esperado": s3_esperado,
+        "detalle": f"{ICON_OK} s3_path coinciden" if s3_ok else f"{ICON_ERROR} AID: {aid_s3} | UDZ: {udz_s3}",
+    }
+
+    wf_na = not (wf and udz_id)
+    wf_ok = (wf == udz_id) if (wf and udz_id) else (not es_despliegue)
+    val_workflow_vs_id = {
+        "ok": wf_ok, "na": wf_na and not es_despliegue,
+        "workflow_name": wf, "udz_id": udz_id,
+        "detalle": f"{ICON_OK} {wf}" if wf_ok else f"{ICON_ERROR} AID: {wf} | UDZ: {udz_id}",
+    }
+
+    aid_amb_wf = detectar_ambiente(wf) if wf else "DESCONOCIDO"
+    udz_amb_id = detectar_ambiente(udz_id) if udz_id else "DESCONOCIDO"
+    amb_wf_na = not (wf and udz_id)
+    amb_wf_ok = (aid_amb_wf == udz_amb_id) if (wf and udz_id) else (not es_despliegue)
+    val_ambiente_workflow_id = {
+        "ok": amb_wf_ok, "na": amb_wf_na and not es_despliegue,
+        "aid_workflow_name": wf, "udz_id": udz_id,
+        "aid_ambiente": aid_amb_wf, "udz_ambiente": udz_amb_id,
+        "detalle": f"{ICON_OK} Ambiente consistente" if amb_wf_ok else f"{ICON_ERROR} AID={aid_amb_wf} | UDZ={udz_amb_id}",
+    }
+
+    udz_tx_na = not bool(udz)
+    require_true = str(udz_require_transmission).strip().lower() == "true"
+    emit_false = str(udz_emit_event).strip().lower() == "false"
+    s3_has_resultados = "resultados" in str(udz_s3).lower()
+    s3_has_crudos = "crudos" in str(udz_s3).lower()
+    udz_tipo = "RESULTADOS" if require_true else ("CRUDOS" if s3_has_crudos else "NO_DEFINIDO")
+    if udz:
+        udz_tx_ok = (emit_false and s3_has_resultados) if require_true else True
+    else:
+        udz_tx_ok = not es_despliegue
+    val_udz_transmisiones = {
+        "ok": udz_tx_ok, "na": udz_tx_na and not es_despliegue,
+        "udz_tipo": udz_tipo, "require_transmission": udz_require_transmission,
+        "emit_event": udz_emit_event, "s3_path": udz_s3,
+        "detalle": f"{ICON_OK} UDZ consistente con regla crudos/resultados" if udz_tx_ok else f"{ICON_ERROR} Si require_transmission=true: emit_event=false y s3_path debe contener 'resultados'",
+    }
+
+    return {
+        "s3_path": val_s3_path,
+        "workflow_vs_id": val_workflow_vs_id,
+        "ambiente_workflow_id": val_ambiente_workflow_id,
+        "udz_transmisiones": val_udz_transmisiones,
+    }
 
 
 def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = None, udz_override: Path = None) -> dict:
@@ -424,62 +541,35 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
             for archivo in faltantes:
                 resultado["resumen"].append(f"{ICON_WARNING} {archivo}: no adjuntado — solo se valida lo que llegó en la HU")
 
-    # s3_path
+    # Las 4 validaciones cruzadas AID<->UDZ (s3_path, workflow_vs_id,
+    # ambiente_workflow_id, udz_transmisiones), factorizadas en
+    # _validar_udz_cruzadas: acá se corren para el UDZ activo (las
+    # validaciones "oficiales" de la HU). Si la HU trae crudos y resultados
+    # como archivos separados, más abajo se vuelven a correr para el otro
+    # archivo, así ambos quedan realmente validados para poder subirlos a
+    # AWS sin tener que alternar cuál está activo.
     aid_s3 = aid.get("s3_path","") if aid else ""
-    _udz_item = udz.get("item") if udz else None
-    _udz_root = udz if isinstance(udz, dict) else {}
-    udz_s3 = (_udz_item.get("s3_path","") if isinstance(_udz_item, dict) else "") or _udz_root.get("s3_path","")
-    udz_require_transmission = (_udz_item.get("require_transmission") if isinstance(_udz_item, dict) else None)
-    if udz_require_transmission is None:
-        udz_require_transmission = _udz_root.get("require_transmission")
-    udz_emit_event = (_udz_item.get("emit_event") if isinstance(_udz_item, dict) else None)
-    if udz_emit_event is None:
-        udz_emit_event = _udz_root.get("emit_event")
-    udz_id = (_udz_item.get("id","") if isinstance(_udz_item, dict) else "") or _udz_root.get("id","")
+    wf = aid.get("workflow_name","") if aid else ""
+    _cross_activo = _validar_udz_cruzadas(aid, wf, aid_s3, udz, es_despliegue)
+    resultado["validaciones"]["s3_path"] = _cross_activo["s3_path"]
+    resultado["validaciones"]["workflow_vs_id"] = _cross_activo["workflow_vs_id"]
+    resultado["validaciones"]["ambiente_workflow_id"] = _cross_activo["ambiente_workflow_id"]
+    resultado["validaciones"]["udz_transmisiones"] = _cross_activo["udz_transmisiones"]
 
-    # El s3_path de UDZ no se compara igual según sea CRUDOS o RESULTADOS:
-    # - CRUDOS (entrada): la ruta debe ser IDÉNTICA a la de AID.
-    # - RESULTADOS (transmisión, salida): la ruta es distinta a propósito —
-    #   donde AID dice "crudos", UDZ debe decir "resultados" (el resto de
-    #   la ruta se mantiene igual). Comparar por igualdad estricta en este
-    #   caso siempre daba error, aunque el archivo estuviera bien armado.
-    _udz_tipo_s3 = clasificar_udz_desde_json(udz) if udz else "DESCONOCIDO"
-    # Si falta alguno de los dos y es MODIFICACIÓN → N/A (True), no bloquear
-    s3_na = not (aid_s3 and udz_s3)
-    if aid_s3 and udz_s3:
-        if _udz_tipo_s3 == "RESULTADOS":
-            s3_esperado = normalizar_s3(aid_s3).replace("crudos", "resultados")
-        else:
-            s3_esperado = normalizar_s3(aid_s3)
-        s3_ok = s3_esperado == normalizar_s3(udz_s3)
-    else:
-        s3_ok = not es_despliegue  # DESPLIEGUE: False (error); MODIFICACIÓN: True (N/A)
-        s3_esperado = normalizar_s3(aid_s3) if aid_s3 else ""
-    resultado["validaciones"]["s3_path"] = {
-        "ok": s3_ok,
-        "na": s3_na and not es_despliegue,
-        "aid": aid_s3,
-        "udz": udz_s3,
-        "tipo_udz": _udz_tipo_s3,
-        "esperado": s3_esperado,
-        "detalle": f"{ICON_OK} s3_path coinciden" if s3_ok else f"{ICON_ERROR} AID: {aid_s3} | UDZ: {udz_s3}"
-    }
-
-    # workflow vs id
-    wf  = aid.get("workflow_name","") if aid else ""
-    uid = udz_id
-    wf_na = not (wf and uid)
-    if wf and uid:
-        wf_ok = wf == uid
-    else:
-        wf_ok = not es_despliegue  # DESPLIEGUE: False; MODIFICACIÓN: True (N/A)
-    resultado["validaciones"]["workflow_vs_id"] = {
-        "ok": wf_ok,
-        "na": wf_na and not es_despliegue,
-        "workflow_name": wf,
-        "udz_id": uid,
-        "detalle": f"{ICON_OK} {wf}" if wf_ok else f"{ICON_ERROR} AID: {wf} | UDZ: {uid}"
-    }
+    # UDZ trae crudos y resultados como archivos separados: validar también
+    # el otro archivo (no solo el activo), para que la consola de AWS pueda
+    # dejar subir los dos sin tener que alternar "UDZ a usar".
+    _slots_udz = detectar_slots_udz(resultado)
+    if len(_slots_udz) > 1:
+        resultado["validaciones_udz_extra"] = {}
+        for _slot in _slots_udz:
+            if _slot["es_activo"] or not _slot["archivo"]:
+                continue
+            _udz_otro = cargar_json(Path(_slot["archivo"]))
+            _clave_extra = f"udz_{_slot['tipo'].lower()}" if _slot["tipo"] else "udz_otro"
+            resultado["validaciones_udz_extra"][_clave_extra] = _validar_udz_cruzadas(
+                aid, wf, aid_s3, _udz_otro, es_despliegue
+            )
 
     # kafka - buscar TODAS las ocurrencias en la estructura (no solo la primera,
     # para detectar si algún step publica en un topic distinto al requerido)
@@ -556,44 +646,6 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
     }
 
     # Ambiente consistente entre AID (workflow_name) y UDZ (id)
-    aid_amb_wf = detectar_ambiente(wf) if wf else "DESCONOCIDO"
-    udz_amb_id = detectar_ambiente(udz_id) if udz_id else "DESCONOCIDO"
-    amb_wf_na = not (wf and udz_id)
-    amb_wf_ok = (aid_amb_wf == udz_amb_id) if (wf and udz_id) else (not es_despliegue)
-    resultado["validaciones"]["ambiente_workflow_id"] = {
-        "ok": amb_wf_ok,
-        "na": amb_wf_na and not es_despliegue,
-        "aid_workflow_name": wf,
-        "udz_id": udz_id,
-        "aid_ambiente": aid_amb_wf,
-        "udz_ambiente": udz_amb_id,
-        "detalle": f"{ICON_OK} Ambiente consistente" if amb_wf_ok else f"{ICON_ERROR} AID={aid_amb_wf} | UDZ={udz_amb_id}"
-    }
-
-    # UDZ resultados/crudos: require_transmission + emit_event + s3_path
-    udz_tx_na = not bool(udz)
-    require_true = str(udz_require_transmission).strip().lower() == "true"
-    emit_false = str(udz_emit_event).strip().lower() == "false"
-    s3_has_resultados = "resultados" in str(udz_s3).lower()
-    s3_has_crudos = "crudos" in str(udz_s3).lower()
-    udz_tipo = "RESULTADOS" if require_true else ("CRUDOS" if s3_has_crudos else "NO_DEFINIDO")
-    if udz:
-        if require_true:
-            udz_tx_ok = emit_false and s3_has_resultados
-        else:
-            udz_tx_ok = True
-    else:
-        udz_tx_ok = not es_despliegue
-    resultado["validaciones"]["udz_transmisiones"] = {
-        "ok": udz_tx_ok,
-        "na": udz_tx_na and not es_despliegue,
-        "udz_tipo": udz_tipo,
-        "require_transmission": udz_require_transmission,
-        "emit_event": udz_emit_event,
-        "s3_path": udz_s3,
-        "detalle": f"{ICON_OK} UDZ consistente con regla crudos/resultados" if udz_tx_ok else f"{ICON_ERROR} Si require_transmission=true: emit_event=false y s3_path debe contener 'resultados'"
-    }
-
     # ambiente
     amb = detectar_ambiente(aid_s3) if aid_s3 else "DESCONOCIDO"
     resultado["validaciones"]["ambiente"] = {
@@ -760,8 +812,7 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
     # _anterior, para no leer el archivo dos veces).
     if _anterior:
         campos_a_conservar = ["probado_qa_por", "probado_qa_en", "probado_qa_estado_code",
-                               "rnf_copiado_por", "rnf_copiado_en",
-                               "desplegado_pdn_por", "desplegado_pdn_en"]
+                               "rnf_copiado_por", "rnf_copiado_en"]
         # Trazabilidad de subida a AWS: igual, es un acto explícito por
         # componente (ta/aid/udz), se conserva al re-analizar. udz_crudos y
         # udz_resultados son los slots separados cuando la HU trae ambos

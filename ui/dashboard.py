@@ -4,7 +4,7 @@ from pathlib import Path
 import streamlit as st
 
 from core.config import ROOT_FOLDER, ESTADO_LISTO, ESTADO_ERROR, ESTADO_INCOMPLETO, ESTADO_SIN_METADATA
-from core.analysis import cargar_json, get_estado_code
+from core.analysis import cargar_json, get_estado_code, obtener_estado_pdn_real
 from core.reports import generar_excel_consolidado
 
 
@@ -49,11 +49,17 @@ def cargar_resultados():
 
 
 def render_kpis_y_progreso(resultados):
-    #  Métricas
-    total    = len(resultados)
-    listos   = sum(1 for r in resultados if get_estado_code(r) == ESTADO_LISTO)
-    errores  = sum(1 for r in resultados if get_estado_code(r) == ESTADO_ERROR)
-    sin_arch = sum(1 for r in resultados if get_estado_code(r) in (ESTADO_INCOMPLETO, ESTADO_SIN_METADATA))
+    #  Métricas — la HU termina cuando se despliega en PDN, no cuando pasa
+    #  las validaciones: "Listos" (validación ok) se separa de "Desplegados"
+    #  (ya en PDN de verdad). "Pendientes" es lo que queda por cerrar: HU
+    #  validadas sin errores que todavía no llegaron a PDN.
+    total       = len(resultados)
+    listos      = sum(1 for r in resultados if get_estado_code(r) == ESTADO_LISTO)
+    desplegados = sum(1 for r in resultados if obtener_estado_pdn_real(r)["desplegado"])
+    pendientes  = max(0, listos - desplegados)
+    errores     = sum(1 for r in resultados if get_estado_code(r) == ESTADO_ERROR)
+    sin_arch    = sum(1 for r in resultados if get_estado_code(r) in (ESTADO_INCOMPLETO, ESTADO_SIN_METADATA))
+    errores_total = errores + sin_arch
 
     #  GUARDAR EXCEL — solo si el sprint fue recién analizado
     backlog_folder = Path("Backlog_Dealer")
@@ -78,9 +84,9 @@ def render_kpis_y_progreso(resultados):
     with col2:
         st.markdown(f"""
         <div class="spyra-kpi spyra-border-green">
-            <div class="spyra-kpi-label">Listos</div>
-            <div class="spyra-kpi-value">{listos}</div>
-            <div class="spyra-kpi-sub">Sin hallazgos críticos</div>
+            <div class="spyra-kpi-label">Desplegados en PDN</div>
+            <div class="spyra-kpi-value">{desplegados}</div>
+            <div class="spyra-kpi-sub">Flujo terminado end-to-end</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -88,7 +94,7 @@ def render_kpis_y_progreso(resultados):
         st.markdown(f"""
         <div class="spyra-kpi spyra-border-orange">
             <div class="spyra-kpi-label">Errores</div>
-            <div class="spyra-kpi-value">{errores}</div>
+            <div class="spyra-kpi-value">{errores_total}</div>
             <div class="spyra-kpi-sub">Requieren corrección</div>
         </div>
         """, unsafe_allow_html=True)
@@ -97,18 +103,19 @@ def render_kpis_y_progreso(resultados):
         st.markdown(f"""
         <div class="spyra-kpi spyra-border-purple">
             <div class="spyra-kpi-label">Pendientes</div>
-            <div class="spyra-kpi-value">{sin_arch}</div>
-            <div class="spyra-kpi-sub">Información incompleta</div>
+            <div class="spyra-kpi-value">{pendientes}</div>
+            <div class="spyra-kpi-sub">Listas, falta desplegar a PDN</div>
         </div>
         """, unsafe_allow_html=True)
 
-    #  RESUMEN EJECUTIVO + PROGRESO
-    pct_ready  = round((listos   / total) * 100) if total else 0
-    pct_err    = round((errores  / total) * 100) if total else 0
-    pct_pend   = round((sin_arch / total) * 100) if total else 0
+    #  RESUMEN EJECUTIVO + PROGRESO — la HU termina cuando llega a PDN, así
+    #  que el % principal es el de despliegue real, no solo el de validación.
+    pct_desp = round((desplegados   / total) * 100) if total else 0
+    pct_pend = round((pendientes    / total) * 100) if total else 0
+    pct_err  = round((errores_total / total) * 100) if total else 0
 
     # Color del círculo/número principal
-    _pct_color = "#00C389" if pct_ready == 100 else ("#E53C3C" if errores > 0 else "#FDDA24")
+    _pct_color = "#00C389" if pct_desp == 100 else ("#E53C3C" if errores_total > 0 else "#FDDA24")
 
     st.markdown(f"""
     <div style="background:white;border:1px solid #E7E5E4;border-radius:16px;padding:20px 28px;
@@ -121,34 +128,34 @@ def render_kpis_y_progreso(resultados):
             Progreso del sprint
           </div>
           <div style="font-size:22px;font-weight:800;color:#2C2A29;margin-top:2px">
-            {listos} de {total} HU listas
+            {desplegados} de {total} HU desplegadas en PDN
           </div>
         </div>
         <div style="font-size:42px;font-weight:900;color:{_pct_color};line-height:1">
-          {pct_ready}<span style="font-size:20px;font-weight:700">%</span>
+          {pct_desp}<span style="font-size:20px;font-weight:700">%</span>
         </div>
       </div>
 
       <!-- Barra segmentada -->
       <div style="width:100%;height:14px;background:#F5F5F4;border-radius:999px;overflow:hidden;display:flex;margin-bottom:14px">
-        <div style="width:{pct_ready}%;background:#00C389;transition:width .4s ease" title="Listos {pct_ready}%"></div>
-        <div style="width:{pct_err}%;background:#E53C3C;transition:width .4s ease" title="Errores {pct_err}%"></div>
+        <div style="width:{pct_desp}%;background:#00C389;transition:width .4s ease" title="Desplegados {pct_desp}%"></div>
         <div style="width:{pct_pend}%;background:#FDDA24;transition:width .4s ease" title="Pendientes {pct_pend}%"></div>
+        <div style="width:{pct_err}%;background:#E53C3C;transition:width .4s ease" title="Errores {pct_err}%"></div>
       </div>
 
       <!-- Leyenda -->
       <div style="display:flex;gap:20px;flex-wrap:wrap">
         <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#44403C;font-weight:600">
           <div style="width:10px;height:10px;border-radius:50%;background:#00C389"></div>
-          Listos &nbsp;<b style="color:#00C389">{listos} ({pct_ready}%)</b>
-        </div>
-        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#44403C;font-weight:600">
-          <div style="width:10px;height:10px;border-radius:50%;background:#E53C3C"></div>
-          Con errores &nbsp;<b style="color:#E53C3C">{errores} ({pct_err}%)</b>
+          Desplegados &nbsp;<b style="color:#00C389">{desplegados} ({pct_desp}%)</b>
         </div>
         <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#44403C;font-weight:600">
           <div style="width:10px;height:10px;border-radius:50%;background:#FDDA24"></div>
-          Pendientes &nbsp;<b style="color:#B45309">{sin_arch} ({pct_pend}%)</b>
+          Pendientes &nbsp;<b style="color:#B45309">{pendientes} ({pct_pend}%)</b>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#44403C;font-weight:600">
+          <div style="width:10px;height:10px;border-radius:50%;background:#E53C3C"></div>
+          Con errores &nbsp;<b style="color:#E53C3C">{errores_total} ({pct_err}%)</b>
         </div>
       </div>
 
