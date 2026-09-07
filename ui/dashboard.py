@@ -3,17 +3,14 @@ from pathlib import Path
 
 import streamlit as st
 
-from core.config import ROOT_FOLDER, ESTADO_LISTO, ESTADO_ERROR, ESTADO_INCOMPLETO, ESTADO_SIN_METADATA
+from core.config import ROOT_FOLDER, ESTADO_LISTO, ESTADO_ERROR, ESTADO_INCOMPLETO, ESTADO_SIN_METADATA, MI_WARNING
 from core.analysis import cargar_json, get_estado_code, obtener_estado_pdn_real
 from core.reports import generar_excel_consolidado
 
 
 def cargar_resultados():
     """Trae los resultados de la sesión (o del disco si no están en memoria).
-
-    Si no hay nada que mostrar, renderiza el estado vacío y detiene el script
-    (st.stop() corta acá el resto del render, como hacía el código original).
-    """
+    Si no hay nada que mostrar, renderiza el estado vacío y detiene el script."""
     resultados    = st.session_state.get("resultados", [])
     sprint_activo = st.session_state.get("sprint_activo", "")
 
@@ -49,10 +46,7 @@ def cargar_resultados():
 
 
 def render_kpis_y_progreso(resultados):
-    #  Métricas — la HU termina cuando se despliega en PDN, no cuando pasa
-    #  las validaciones: "Listos" (validación ok) se separa de "Desplegados"
-    #  (ya en PDN de verdad). "Pendientes" es lo que queda por cerrar: HU
-    #  validadas sin errores que todavía no llegaron a PDN.
+    # "Desplegados" es PDN real; "Pendientes" son las validadas sin errores que aún no llegaron.
     total       = len(resultados)
     listos      = sum(1 for r in resultados if get_estado_code(r) == ESTADO_LISTO)
     desplegados = sum(1 for r in resultados if obtener_estado_pdn_real(r)["desplegado"])
@@ -61,13 +55,12 @@ def render_kpis_y_progreso(resultados):
     sin_arch    = sum(1 for r in resultados if get_estado_code(r) in (ESTADO_INCOMPLETO, ESTADO_SIN_METADATA))
     errores_total = errores + sin_arch
 
-    #  GUARDAR EXCEL — solo si el sprint fue recién analizado
     backlog_folder = Path("Backlog_Dealer")
     if st.session_state.get("_excel_pending"):
         try:
             generar_excel_consolidado(resultados, guardar_en_carpeta=backlog_folder)
-        except Exception:
-            pass
+        except Exception as e:
+            st.toast(f"No se pudo actualizar el Excel consolidado: {e}", icon=MI_WARNING)
         st.session_state["_excel_pending"] = False
 
     col1, col2, col3, col4 = st.columns(4, gap="medium")
@@ -108,13 +101,10 @@ def render_kpis_y_progreso(resultados):
         </div>
         """, unsafe_allow_html=True)
 
-    #  RESUMEN EJECUTIVO + PROGRESO — la HU termina cuando llega a PDN, así
-    #  que el % principal es el de despliegue real, no solo el de validación.
     pct_desp = round((desplegados   / total) * 100) if total else 0
     pct_pend = round((pendientes    / total) * 100) if total else 0
     pct_err  = round((errores_total / total) * 100) if total else 0
 
-    # Color del círculo/número principal
     _pct_color = "#00C389" if pct_desp == 100 else ("#E53C3C" if errores_total > 0 else "#FDDA24")
 
     st.markdown(f"""

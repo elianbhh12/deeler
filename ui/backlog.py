@@ -40,10 +40,6 @@ def render_excel_card():
             if st.button("Abrir", key="btn_open_excel", width='stretch', icon=MI_FOLDER,
                          help="Abrir Consolidado_Backlog.xlsx", type="primary"):
                 try:
-                    # os.startfile abre directo con la app asociada (Excel) —
-                    # subprocess con 'start'/shell=True a veces abre la
-                    # ventana de CMD en su lugar, según cómo esté configurado
-                    # el equipo (visto en PC de la empresa).
                     os.startfile(str(_excel_file))
                 except Exception as ex:
                     st.error(f"No se pudo abrir: {ex}", icon=MI_ERROR)
@@ -54,9 +50,6 @@ def render_excel_card():
 
 
 def render_tabla_resumen(resultados):
-    #  Filtros — con pocas HU no hacía falta, pero apenas crece el sprint (o
-    #  se quiere ubicar una HU puntual) no había forma de acotar la tabla más
-    #  que scrolleando a ojo.
     col_busca, col_val = st.columns([0.65, 0.35])
     with col_busca:
         texto_busqueda = st.text_input(
@@ -115,9 +108,6 @@ def render_tabla_resumen(resultados):
         udz_ok = _arc_badge("UDZ")
         rnf_ok = ICON_OK if "NO" not in arcs.get("RNF", "") else ICON_ERROR
 
-        #  Desplegado en PDN — se infiere de subidas reales a AWS (TA/AID/UDZ
-        #  ya en la tabla PDN), no de un checkbox manual. Ver
-        #  core.analysis.obtener_estado_pdn_real.
         _pdn_real = obtener_estado_pdn_real(r)
         if _pdn_real["desplegado"]:
             desplegado_badge = f"{ICON_OK} {(_pdn_real['en'] or '')[:10]}"
@@ -138,10 +128,6 @@ def render_tabla_resumen(resultados):
             "TA": ta_ok,
             "AID": aid_ok,
             "UDZ": udz_ok,
-            # "Validación" = pasó las 12 validaciones críticas; distinto de
-            # "Desplegado PDN" = la HU ya terminó de verdad (subió a PDN).
-            # Una HU puede estar en Validación=Listo y aun así seguir
-            # pendiente hasta que se despliegue.
             "Validación": _est_short,
             "Desplegado PDN": desplegado_badge,
         })

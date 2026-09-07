@@ -1,14 +1,11 @@
 """Subida de TA/AID/UDZ a las tablas DynamoDB de QA/PDN.
 
-Adaptación de `cargaaws.py` (el script que ya se usa manualmente en el banco)
-para subir, por HU, exactamente el archivo que la herramienta validó — en vez
-de escanear una carpeta completa. Siempre intenta el envío real (no hay modo
-simulación): si falta boto3, las credenciales, o no hay red, el error real
-queda en el log — nunca rompe la app, pero tampoco lo esconde.
+Sube, por HU, exactamente el archivo que la herramienta validó. Siempre
+intenta el envío real: si falta boto3, las credenciales, o no hay red, el
+error real queda en el log en vez de esconderse.
 
-`subir_componente` devuelve, además del resultado, un `log` paso a paso (como
-los `print()` del script original: credenciales, cuenta, tabla, resultado)
-para que la consola de la UI pueda mostrar el detalle completo de qué pasó.
+`subir_componente` devuelve, además del resultado, un `log` paso a paso para
+que la consola de la UI pueda mostrar el detalle completo de qué pasó.
 """
 import json
 from datetime import datetime
@@ -22,9 +19,7 @@ def cargar_credenciales_aws(ruta: Path) -> dict:
     if not ruta.exists():
         raise FileNotFoundError(f"No existe el archivo de credenciales AWS: {ruta}")
     creds = json.loads(ruta.read_text(encoding="utf-8"))
-    # aws_session_token es obligatorio solo con credenciales temporales (STS,
-    # como usa el banco). Un usuario IAM normal (access key permanente, como
-    # en una cuenta personal) no lo tiene — se manda solo si vino en el JSON.
+    # aws_session_token solo es obligatorio con credenciales temporales (STS).
     requeridos = ["aws_access_key_id", "aws_secret_access_key", "region_name"]
     faltantes = [k for k in requeridos if not creds.get(k)]
     if faltantes:
@@ -53,10 +48,7 @@ def subir_componente(tipo: str, archivo: Path, ambiente: str = "qa") -> dict:
     archivo = Path(archivo)
     _log(f"Archivo: {archivo.name}")
     try:
-        # parse_float=Decimal: DynamoDB (boto3) no acepta el tipo float de
-        # Python para números — solo Decimal. Sin esto, cualquier número con
-        # punto decimal en el JSON (ej. 1.5) tira "Float types are not
-        # supported. Use Decimal types instead." al hacer put_item.
+        # DynamoDB no acepta float, solo Decimal.
         item = json.loads(archivo.read_text(encoding="utf-8"), parse_float=Decimal)
         _log(f"JSON válido — {len(item)} campo(s) de primer nivel")
     except Exception as e:
@@ -67,9 +59,7 @@ def subir_componente(tipo: str, archivo: Path, ambiente: str = "qa") -> dict:
         import boto3
         import urllib3
         from botocore.exceptions import ClientError, NoCredentialsError, EndpointConnectionError
-        # Igual que cargaaws.py: las llamadas van con verify=False (necesario
-        # en la red del banco), así que se silencia el InsecureRequestWarning
-        # que eso genera — es ruido esperado, no una falla real.
+        # verify=False es necesario en la red del banco; se silencia el warning que genera.
         urllib3.disable_warnings()
     except ImportError:
         _log("ERROR: falta instalar boto3 (pip install boto3)")
@@ -122,9 +112,7 @@ def subir_componente(tipo: str, archivo: Path, ambiente: str = "qa") -> dict:
         _log(f"ERROR subiendo a AWS: {e}")
         return {"ok": False, "log": log}
 
-    # Verificación: releer el item recién escrito desde la misma tabla, para
-    # confirmar que realmente quedó guardado (no solo que la llamada no tiró
-    # error) — así se ve en la consola de la app sin tener que ir a AWS.
+    # Releer el item para confirmar que realmente quedó guardado.
     try:
         pk_name = tabla_ref.key_schema[0]["AttributeName"]
         pk_valor = item.get(pk_name)

@@ -94,6 +94,17 @@ ITERATION_PATH = os.getenv("ITERATION_PATH")
 ROOT_FOLDER    = os.getenv("ROOT_FOLDER", r"C:\Backlog_Dealer")
 DEALER_NAME    = os.getenv("DEALER_NAME", "Dealer")
 
+#  Variables obligatorias para poder traer HU desde ADO (Paso 1). No se
+#  valida al importar (el resto de la app funciona igual sin ADO, ej. seguir
+#  analizando sprints ya descargados) — solo se expone la lista de lo que
+#  falta para poder avisar en la UI.
+ADO_CONFIG_FALTANTE = [
+    nombre for nombre, valor in [
+        ("ADO_ORG", ORG), ("ADO_PROJECT", PROJECT), ("ADO_TEAM", TEAM),
+        ("ADO_AREA", AREA), ("ADO_PAT", PAT),
+    ] if not valor
+]
+
 KAFKA_TOPIC_REQUERIDO = "documentreceivingmanagement.documentuploadedv1"
 
 # AID: valores válidos para TYPE en cada step de workflow_definition.
@@ -104,15 +115,12 @@ AID_TYPE_VALIDOS = {"topic", "write_results"}
 
 #  Subida a AWS DynamoDB — ruta al JSON de credenciales temporales
 #  (aws_access_key_id/secret/session_token/region_name) y nombres de tabla por
-#  componente y ambiente. Coincide con lo que ya usa cargaaws.py en el banco.
-#  Los nombres de tabla son editables por .env (por si cambian sin tocar código);
+#  componente y ambiente. Los nombres de tabla son editables por .env;
 #  los valores de acá son el default si no se sobreescriben.
 #
-#  AWS_CRED_FILE no hace falta definirlo en .env: por default apunta a
-#  "aws_credentials.json" en la raíz del proyecto (ya está en .gitignore).
-#  Si se define, una ruta relativa se resuelve contra la raíz del proyecto
-#  (no contra el directorio desde donde se lanzó streamlit) — así funciona
-#  igual sin importar la máquina o desde dónde se corra run.bat.
+#  AWS_CRED_FILE por default apunta a "aws_credentials.json" en la raíz del
+#  proyecto. Si se define, una ruta relativa se resuelve contra la raíz del
+#  proyecto, no contra el directorio desde donde se lanzó streamlit.
 _aws_cred_file_env = os.getenv("AWS_CRED_FILE", "").strip()
 if _aws_cred_file_env:
     _aws_cred_path = Path(_aws_cred_file_env)

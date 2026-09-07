@@ -1,11 +1,6 @@
 """Selector de HU y todo su panel de detalle: header, trazabilidad/aprobación,
 RNF, guía contextual, las 12 validaciones críticas (TA/AID/UDZ y cruzadas),
 resumen corto y archivos y adjuntos.
-
-Es el módulo más grande de ui/ porque las 12 validaciones comparten los
-helpers val_card/val_group y variables locales del análisis de la HU
-seleccionada — partirlas en un archivo por validación sería más archivos
-para navegar sin ganar claridad real.
 """
 import re
 import json
@@ -21,7 +16,7 @@ from core.config import (
     MI_APPROVE, MI_GUIDE, MI_OK, MI_REFRESH, MI_WARNING, MI_SUMMARY, MI_INFO, MI_SEARCH,
 )
 from core.analysis import get_estado_code, cargar_json, clasificar_udz_desde_json, normalizar_s3, _val_ok, analizar_hu, detectar_slots_udz, obtener_estado_pdn_real
-from core.utils import abrir_archivo, obtener_usuario_actual
+from core.utils import abrir_archivo, obtener_usuario_actual, encontrar_hu_folder
 from core.guide import mostrar_guia_tipo
 
 
@@ -38,14 +33,9 @@ def _generar_resumen_resolution(r: dict) -> tuple:
         "",
     ]
 
-    # Un solo cálculo de slots UDZ, reusado acá (referencia técnica) y más
-    # abajo (checklist) — si hay crudos y resultados como archivos separados,
-    # cada uno tiene su propio s3_path y no alcanza con mostrar uno solo.
     _slots_udz = detectar_slots_udz(r)
 
-    # Referencia técnica solo una vez que la HU YA se subió de verdad a PDN
-    # (no apenas se detecta que los archivos son "de PDN" por su s3_path) —
-    # antes de subir no hay nada que referenciar todavía.
+    # Referencia técnica solo una vez que la HU YA se subió de verdad a PDN.
     _val = r.get("validaciones", {})
     if obtener_estado_pdn_real(r)["desplegado"]:
         _cu_name = _val.get("ta_cu_name", {}).get("cu_name") or ""
@@ -61,8 +51,7 @@ def _generar_resumen_resolution(r: dict) -> tuple:
                 lineas.append(f"🔗 UDZ s3_path: {_udz_s3}")
                 _hay_ref = True
         else:
-            # Solo el UDZ activo pasa por las validaciones — para el otro se
-            # lee el s3_path directo del archivo, sin pasar por "val".
+            # Solo el UDZ activo pasa por las validaciones; el otro se lee directo del archivo.
             _nombres_s3 = {"CRUDOS": "Crudos", "RESULTADOS": "Transmisión"}
             for _s in _slots_udz:
                 _data = cargar_json(Path(_s["archivo"])) if _s["archivo"] else None
@@ -80,7 +69,6 @@ def _generar_resumen_resolution(r: dict) -> tuple:
         _qa_en = (r.get("probado_qa_en") or "")[:16].replace("T", " ")
         lineas.append(f"✅ Probado en QA — {_qa_por} — {_qa_en}")
     else:
-        # ➖ (no ❌): probar en QA es opcional, no un requisito que falte.
         lineas.append("➖ No se registró prueba en QA")
 
     def _linea_aws(clave, nombre, hay_archivo):
@@ -107,9 +95,6 @@ def _generar_resumen_resolution(r: dict) -> tuple:
         for _s in _slots_udz:
             _linea_aws(f"udz_{_s['tipo'].lower()}", _nombres.get(_s["tipo"], "UDZ"), True)
 
-    # No hace falta una línea aparte de "Desplegado en PDN": cada línea de
-    # arriba ya dice a qué ambiente se subió cada componente — si todas dicen
-    # PDN, la HU está desplegada; no hay un hecho adicional que registrar.
     completo = not any(l.startswith("❌") for l in lineas)
     return "\n".join(lineas), completo
 
@@ -121,10 +106,8 @@ _RESUMEN_COLORES = {"ok": "#065F46", "err": "#991B1B", "na": "#78716C"}
 
 
 def _resumen_filas_html(texto: str) -> str:
-    """Arma las filas HTML coloreadas del resumen (ver _RESUMEN_COLORES) —
-    separado de la tarjeta que las envuelve para poder reusarlas tanto en la
-    vista normal como en el componente con botón de copiar (mismo HTML en
-    los dos lados, para que "lo que se ve" y "lo que se copia" sean lo mismo)."""
+    """Arma las filas HTML coloreadas del resumen, para reusarlas tanto en la
+    vista normal como en el componente con botón de copiar."""
     filas = []
     for linea in texto.split("\n"):
         if not linea:
@@ -141,8 +124,6 @@ def _resumen_filas_html(texto: str) -> str:
         elif linea.startswith("HU "):
             filas.append(f'<div style="font-weight:800;font-size:13.5px;color:#2C2A29">{html.escape(linea)}</div>')
         elif linea.startswith("Estado de Flujo:"):
-            # Lo primero que hay que ver al abrir el resumen — se destaca más
-            # que el resto (más grande, en negrita, coloreado según el estado).
             _valor = linea.split(":", 1)[1].strip()
             _color_estado = {"LISTO": "#065F46", "CON ERRORES": "#991B1B"}.get(_valor, "#92400E")
             filas.append(
@@ -150,7 +131,6 @@ def _resumen_filas_html(texto: str) -> str:
                 f'Estado de Flujo: {html.escape(_valor)}</div>'
             )
         elif linea.startswith("🔗"):
-            # Datos técnicos de referencia (solo aparecen en PDN).
             filas.append(
                 f'<div style="font-size:12px;color:#1D4ED8;font-family:ui-monospace,SFMono-Regular,'
                 f'Menlo,Consolas,monospace;word-break:break-all;margin-bottom:3px">{html.escape(linea)}</div>'
@@ -162,17 +142,11 @@ def _resumen_filas_html(texto: str) -> str:
 
 def _render_resumen_copiable(texto: str):
     """Misma tarjeta coloreada de siempre, pero con un botón "Copiar" que usa
-    el portapapeles del navegador (Clipboard API) para copiar tanto el HTML
-    con formato y colores (para pegar en el campo Resolution de ADO, que es
-    texto enriquecido) como el texto plano (para cualquier otro destino) —
-    sin necesidad de un bloque de texto aparte ni de seleccionar a mano.
+    el portapapeles del navegador para copiar tanto el HTML con formato (para
+    pegar en el campo Resolution de ADO) como el texto plano.
 
-    Va en un iframe (st.iframe con HTML crudo, no una URL) porque un
-    <script> dentro de st.markdown no se ejecuta — es la única forma de
-    correr JS real en Streamlit. height="content" (auto) no reajusta bien
-    cuando el contenido cambia de tamaño entre renders (deja un espacio en
-    blanco enorme si el resumen se acorta) — se calcula el alto a mano según
-    la cantidad de líneas, como antes."""
+    Va en un iframe porque un <script> dentro de st.markdown no se ejecuta.
+    El alto se calcula a mano según la cantidad de líneas."""
     filas_html = _resumen_filas_html(texto)
     _n_lineas = texto.count("\n") + 1
     _altura = 60 + _n_lineas * 21
@@ -205,8 +179,6 @@ def _render_resumen_copiable(texto: str):
                     }})
                 ]);
             }} catch (e) {{
-                // Navegadores que no soportan ClipboardItem con varios tipos
-                // (o sin permiso de portapapeles) — al menos el texto plano.
                 await navigator.clipboard.writeText(texto);
             }}
             document.getElementById("texto-copiar").innerText = "Copiado";
@@ -218,6 +190,126 @@ def _render_resumen_copiable(texto: str):
         }});
     </script>
     """, height=_altura)
+
+
+def _render_seccion_rnf(r: dict, hu_folder):
+    rnf_path_str = r.get("rnf_path")
+    rnf_path = Path(rnf_path_str) if rnf_path_str else None
+
+    col_rnf1, col_rnf2 = st.columns([0.75, 0.25], vertical_alignment="center")
+    with col_rnf1:
+        if rnf_path:
+            st.markdown(f"""
+            <div class="rnf-card ok">
+                <div class="rnf-icon">{ICON_OK}</div>
+                <div>
+                    <div class="rnf-info-title">RNF encontrado</div>
+                    <div class="rnf-info-sub"><code>{rnf_path.name}</code> — Copia los datos al consolidado antes de proceder</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div class="rnf-card miss">
+                <div class="rnf-icon">{ICON_ERROR}</div>
+                <div>
+                    <div class="rnf-info-title">Falta el RNF</div>
+                    <div class="rnf-info-sub">No se encontró archivo RNF*.xlsx — Revisa los adjuntos en ADO y descarga nuevamente</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+    with col_rnf2:
+        if rnf_path:
+            if st.button("Abrir RNF", key=f"btn_rnf_{r.get('hu_id')}", width='stretch'):
+                abrir_archivo(rnf_path)
+        else:
+            st.button("RNF no disponible", disabled=True, key=f"btn_rnf_dis_{r.get('hu_id')}", width='stretch')
+
+    if not rnf_path:
+        return
+
+    _rnf_copiado_por = r.get("rnf_copiado_por")
+    if _rnf_copiado_por:
+        _rnf_copiado_en_fmt = (r.get("rnf_copiado_en") or "")[:16].replace("T", " ")
+        st.caption(f"{ICON_OK} RNF copiado al acumulado por {_rnf_copiado_por} — {_rnf_copiado_en_fmt}")
+    elif st.button("Marcar RNF copiado al acumulado", key=f"btn_rnf_copiado_{r.get('hu_id')}",
+                   icon=MI_OK, help="Confirmá esto después de pasar los datos del RNF al Excel acumulado del área"):
+        if hu_folder:
+            r["rnf_copiado_por"] = obtener_usuario_actual()
+            r["rnf_copiado_en"] = datetime.now().isoformat()
+            out_path = hu_folder / "analisis" / "analisis_tecnico.json"
+            out_path.write_text(json.dumps(r, indent=2, ensure_ascii=False), encoding="utf-8")
+            _res = st.session_state.get("resultados", [])
+            for _i, _x in enumerate(_res):
+                if str(_x.get("hu_id")) == str(r.get("hu_id")):
+                    _res[_i] = r
+                    break
+            st.session_state["resultados"] = _res
+            st.toast("RNF marcado como copiado", icon=MI_OK)
+            st.rerun()
+
+
+def _render_udz_detectados_grid(r: dict):
+    udz_files_raw = r.get("udz_files", []) if isinstance(r.get("udz_files"), list) else []
+    udz_files = [Path(p) if isinstance(p, str) else p for p in udz_files_raw]
+    if not (udz_files and len(udz_files) > 1):
+        return
+
+    st.markdown("### UDZ Detectados en esta HU")
+    cols = st.columns(len(udz_files))
+    for idx, udz_path in enumerate(udz_files):
+        with cols[idx]:
+            udz_data = cargar_json(udz_path)
+            tipo_udz = clasificar_udz_desde_json(udz_data) if udz_data else "DESCONOCIDO"
+            color = "#059669" if tipo_udz == "RESULTADOS" else "#0369A1" if tipo_udz == "CRUDOS" else "#78716C"
+
+            if udz_data:
+                item = udz_data.get("item", udz_data)
+                req = str(item.get("require_transmission", "")).strip().lower()
+                emit = str(item.get("emit_event", "")).strip().lower()
+            else:
+                req, emit = "?", "?"
+
+            st.markdown(f"""
+            <div style="border:2px solid {color};border-radius:8px;padding:12px;background:#FAFAF9">
+                <div style="font-weight:700;font-size:13px;color:{color}">{tipo_udz}</div>
+                <div style="font-size:11px;color:#6B7280;margin-top:6px;word-break:break-all">
+                    <code>{udz_path.name}</code><br>
+                    <span style="color:#374151">require_transmission: <strong>{req}</strong></span><br>
+                    <span style="color:#374151">emit_event: <strong>{emit}</strong></span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+    st.divider()
+
+
+def _render_alertas_configs_sin_tipo(r: dict):
+    for cfg in r.get("configs_sin_tipo", []):
+        _nombre = cfg["nombre"]
+        _tipo   = cfg["tipo_inferido"]
+        _color  = {"AID": "#7C3AED", "TA": "#0369A1", "UDZ": "#065F46"}.get(_tipo, "#92400E")
+        if _tipo != "desconocido":
+            st.markdown(f"""
+            <div style="border-left:4px solid {_color};background:#FFFBEB;padding:10px 14px;border-radius:0 6px 6px 0;margin:4px 0">
+                <div style="font-weight:700;font-size:12px;color:#92400E">{ICON_WARNING} ARCHIVO CON NOMBRE GENÉRICO — REQUIERE REVISIÓN MANUAL</div>
+                <div style="font-size:12px;color:#374151;margin-top:4px">
+                    <code>{_nombre}</code> fue detectado como <strong style="color:{_color}">{_tipo}</strong> por su estructura interna,
+                    pero <strong>debes abrirlo y confirmar</strong> que realmente corresponde a ese componente.
+                    El nombre del archivo debe empezar con <code>{"ta_" if _tipo=="TA" else "aid_" if _tipo=="AID" else "udz_"}</code> para ser detectado automáticamente en futuras revisiones.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div style="border-left:4px solid #DC2626;background:#FEF2F2;padding:10px 14px;border-radius:0 6px 6px 0;margin:4px 0">
+                <div style="font-weight:700;font-size:12px;color:#DC2626">{ICON_ERROR} ARCHIVO NO RECONOCIDO — REVISIÓN OBLIGATORIA</div>
+                <div style="font-size:12px;color:#374151;margin-top:4px">
+                    <code>{_nombre}</code> no pudo identificarse como TA, AID ni UDZ.
+                    <strong>ábrelo manualmente</strong> y determina a qué componente pertenece.
+                    Renómbralo con <code>ta_</code>, <code>aid_</code> o <code>udz_</code> para que sea procesado correctamente.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
 
 def render_hu_detail(resultados, sprint_activo):
@@ -241,7 +333,7 @@ def render_hu_detail(resultados, sprint_activo):
 
     def _hu_label(r):
         _id    = r.get('hu_id', '?')
-        _title = r.get('hu_title', '')  # sin recortar: la búsqueda del selectbox necesita el título completo
+        _title = r.get('hu_title', '')
         _tipo  = r.get('tipo_cambio', '')[:4]
         _icon  = ESTADO_ICON.get(get_estado_code(r), ICON_WARNING)
         return f"{_icon} {_id} — {_title} [{_tipo}]"
@@ -250,9 +342,6 @@ def render_hu_detail(resultados, sprint_activo):
         st.warning("No hay HU para mostrar con los filtros seleccionados")
         st.stop()
 
-    # Mismo filtro que la tabla del backlog (buscar + validación) — para
-    # ubicar rápido una HU puntual sin tener que scrollear el selectbox
-    # entero cuando el sprint tiene muchas.
     col_busca_hu, col_val_hu = st.columns([0.65, 0.35])
     with col_busca_hu:
         _texto_busqueda_hu = st.text_input(
@@ -284,15 +373,11 @@ def render_hu_detail(resultados, sprint_activo):
         st.stop()
 
     # El selectbox persiste el hu_id como valor, no el label armado (que
-    # trae un ícono de estado que puede cambiar al re-analizar) — si
-    # persistiera el label, un cambio de ícono deja la opción anterior fuera
-    # de la lista nueva y Streamlit vuelve en silencio a la primera HU.
+    # trae un ícono de estado que puede cambiar al re-analizar).
     hu_por_id = {r.get("hu_id"): r for r in _resultados_filtrados}
 
-    # Red de seguridad extra ante el caso reportado de que la selección
-    # salta a la primera HU tras ciertas acciones (guardar credenciales AWS,
-    # subir un componente): se guarda la elección en "_hu_select_shadow" y
-    # se restaura acá si "hu_select" no está o apunta a una HU que ya no existe.
+    # Red de seguridad: restaura la selección si "hu_select" no existe o
+    # apunta a una HU que ya no está en la lista filtrada.
     _shadow = st.session_state.get("_hu_select_shadow")
     if _shadow in hu_por_id and st.session_state.get("hu_select") not in hu_por_id:
         st.session_state["hu_select"] = _shadow
@@ -308,22 +393,11 @@ def render_hu_detail(resultados, sprint_activo):
     if seleccion_id is not None:
         r   = hu_por_id[seleccion_id]
         val = r.get("validaciones", {})
-        # La consola "Subir a AWS" (más abajo) usa esto para saber a qué HU referirse.
         st.session_state["hu_activa_id"] = r.get("hu_id")
 
         sprint_path = Path(ROOT_FOLDER) / sprint_activo
-        hu_folder = None
         hu_id_str = str(r.get("hu_id", ""))
-
-        if sprint_path.exists():
-            for d in sprint_path.iterdir():
-                if not d.is_dir():
-                    continue
-                # "-" al final es obligatorio: sin esto, HU "100" matcheaba
-                # por error la carpeta "1002-..." (prefijo numérico de otro ID).
-                if d.name.startswith(f"{hu_id_str}-"):
-                    hu_folder = d
-                    break
+        hu_folder = encontrar_hu_folder(sprint_path, hu_id_str)
 
         _ta_files  = r.get("ta_files", [])
         _aid_files = r.get("aid_files", [])
@@ -413,10 +487,6 @@ def render_hu_detail(resultados, sprint_activo):
             c = color if ok else "#DC2626"
             return f'<span class="hu-chip" style="border-color:{c};color:{c}" title="{name}"><b>{key}</b> {icon} <small style="font-weight:400;color:#6B7280">{name[:28]}</small></span>'
 
-        # Ambiente y Estado son lo primero que hay que mirar de un vistazo,
-        # por eso van coloreados — pero como chips del mismo tamaño que el
-        # resto (no una insignia aparte y gigante), para que se lea como una
-        # sola fila prolija, no como dos estilos distintos peleando entre sí.
         _amb_colores = {
             "PDN": ("#FEE2E2", "#B91C1C", "#FCA5A5"),
             "QA":  ("#FEF3C7", "#92400E", "#FDE68A"),
@@ -459,8 +529,6 @@ def render_hu_detail(resultados, sprint_activo):
                     st.session_state["resultados"] = _res
                     st.rerun()
 
-        # Único paso de confirmación manual antes del despliegue — no hay
-        # "aprobado" separado, el mismo usuario que ejecuta el flujo confirma.
         _analizado_por     = r.get("analizado_por")
         _analizado_en_fmt  = r.get("analizado_en", "")[:16].replace("T", " ")
         _qa_por            = r.get("probado_qa_por")
@@ -482,9 +550,6 @@ def render_hu_detail(resultados, sprint_activo):
         if _qa_vigente:
             st.success(f"Probado en QA por {_qa_por} — {_qa_en_fmt}", icon=MI_APPROVE)
         else:
-            # Opcional: no todas las HU pasan por una prueba en QA antes de
-            # PDN — por eso nunca bloquea el despliegue, solo deja constancia
-            # de que alguien la probó, para quien lo necesite.
             _puede_marcar_qa = _estado_code_hoy == ESTADO_LISTO
             if st.button("Marcar como probado en QA (opcional)", key=f"qa_{r.get('hu_id')}", width='stretch',
                          icon=MI_APPROVE, disabled=not _puede_marcar_qa,
@@ -503,14 +568,9 @@ def render_hu_detail(resultados, sprint_activo):
                             _res[_i] = r
                             break
                     st.session_state["resultados"] = _res
-                    # st.toast (no st.success): el rerun de abajo borra mensajes inline.
                     st.toast("QA registrado", icon=MI_OK)
                     st.rerun()
 
-        # "Desplegado en PDN" ya no es un checkbox que cualquiera marca: se
-        # calcula solo, mirando si TA/AID/UDZ realmente se subieron con éxito
-        # a la tabla de PDN (consola "Subir a AWS", más abajo) — ver
-        # core.analysis.obtener_estado_pdn_real.
         _pdn_real = obtener_estado_pdn_real(r)
         if _pdn_real["desplegado"]:
             _pdn_en_fmt = (_pdn_real["en"] or "")[:16].replace("T", " ")
@@ -527,122 +587,10 @@ def render_hu_detail(resultados, sprint_activo):
         with st.expander("Resumen para Resolution de ADO", expanded=False, icon=MI_OK if _completo_resumen else MI_SUMMARY):
             _render_resumen_copiable(_texto_resumen)
 
-        rnf_path_str = r.get("rnf_path")
-        rnf_path = Path(rnf_path_str) if rnf_path_str else None
-
-        col_rnf1, col_rnf2 = st.columns([0.75, 0.25], vertical_alignment="center")
-        with col_rnf1:
-            if rnf_path:
-                st.markdown(f"""
-                <div class="rnf-card ok">
-                    <div class="rnf-icon">{ICON_OK}</div>
-                    <div>
-                        <div class="rnf-info-title">RNF encontrado</div>
-                        <div class="rnf-info-sub"><code>{rnf_path.name}</code> — Copia los datos al consolidado antes de proceder</div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown(f"""
-                <div class="rnf-card miss">
-                    <div class="rnf-icon">{ICON_ERROR}</div>
-                    <div>
-                        <div class="rnf-info-title">Falta el RNF</div>
-                        <div class="rnf-info-sub">No se encontró archivo RNF*.xlsx — Revisa los adjuntos en ADO y descarga nuevamente</div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-        with col_rnf2:
-            if rnf_path:
-                if st.button("Abrir RNF", key=f"btn_rnf_{r.get('hu_id')}", width='stretch'):
-                    abrir_archivo(rnf_path)
-            else:
-                st.button("RNF no disponible", disabled=True, key=f"btn_rnf_dis_{r.get('hu_id')}", width='stretch')
-
-        if rnf_path:
-            _rnf_copiado_por = r.get("rnf_copiado_por")
-            if _rnf_copiado_por:
-                _rnf_copiado_en_fmt = (r.get("rnf_copiado_en") or "")[:16].replace("T", " ")
-                st.caption(f"{ICON_OK} RNF copiado al acumulado por {_rnf_copiado_por} — {_rnf_copiado_en_fmt}")
-            else:
-                if st.button("Marcar RNF copiado al acumulado", key=f"btn_rnf_copiado_{r.get('hu_id')}",
-                             icon=MI_OK, help="Confirmá esto después de pasar los datos del RNF al Excel acumulado del área"):
-                    if hu_folder:
-                        r["rnf_copiado_por"] = obtener_usuario_actual()
-                        r["rnf_copiado_en"] = datetime.now().isoformat()
-                        out_path = hu_folder / "analisis" / "analisis_tecnico.json"
-                        out_path.write_text(json.dumps(r, indent=2, ensure_ascii=False), encoding="utf-8")
-                        _res = st.session_state.get("resultados", [])
-                        for _i, _x in enumerate(_res):
-                            if str(_x.get("hu_id")) == str(r.get("hu_id")):
-                                _res[_i] = r
-                                break
-                        st.session_state["resultados"] = _res
-                        st.toast("RNF marcado como copiado", icon=MI_OK)
-                        st.rerun()
-
+        _render_seccion_rnf(r, hu_folder)
         st.divider()
-
-        udz_files_raw = r.get("udz_files", []) if isinstance(r.get("udz_files"), list) else []
-        udz_files = [Path(p) if isinstance(p, str) else p for p in udz_files_raw]
-        if udz_files and len(udz_files) > 1:
-            st.markdown("### UDZ Detectados en esta HU")
-            cols = st.columns(len(udz_files))
-            for idx, udz_path in enumerate(udz_files):
-                with cols[idx]:
-                    udz_data = cargar_json(udz_path)
-                    tipo_udz = clasificar_udz_desde_json(udz_data) if udz_data else "DESCONOCIDO"
-                    color = "#059669" if tipo_udz == "RESULTADOS" else "#0369A1" if tipo_udz == "CRUDOS" else "#78716C"
-
-                    if udz_data:
-                        item = udz_data.get("item", udz_data)
-                        req = str(item.get("require_transmission", "")).strip().lower()
-                        emit = str(item.get("emit_event", "")).strip().lower()
-                        s3p = item.get("s3_path", "")
-                    else:
-                        req, emit, s3p = "?", "?", "?"
-
-                    st.markdown(f"""
-                    <div style="border:2px solid {color};border-radius:8px;padding:12px;background:#FAFAF9">
-                        <div style="font-weight:700;font-size:13px;color:{color}">{tipo_udz}</div>
-                        <div style="font-size:11px;color:#6B7280;margin-top:6px;word-break:break-all">
-                            <code>{udz_path.name}</code><br>
-                            <span style="color:#374151">require_transmission: <strong>{req}</strong></span><br>
-                            <span style="color:#374151">emit_event: <strong>{emit}</strong></span>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-            st.divider()
-
-        _configs_alerta = r.get("configs_sin_tipo", [])
-        if _configs_alerta:
-            for cfg in _configs_alerta:
-                _nombre = cfg["nombre"]
-                _tipo   = cfg["tipo_inferido"]
-                _auto   = cfg.get("auto_asignado", False)
-                _color  = {"AID": "#7C3AED", "TA": "#0369A1", "UDZ": "#065F46"}.get(_tipo, "#92400E")
-                if _tipo != "desconocido":
-                    st.markdown(f"""
-                    <div style="border-left:4px solid {_color};background:#FFFBEB;padding:10px 14px;border-radius:0 6px 6px 0;margin:4px 0">
-                        <div style="font-weight:700;font-size:12px;color:#92400E">{ICON_WARNING} ARCHIVO CON NOMBRE GENÉRICO — REQUIERE REVISIÓN MANUAL</div>
-                        <div style="font-size:12px;color:#374151;margin-top:4px">
-                            <code>{_nombre}</code> fue detectado como <strong style="color:{_color}">{_tipo}</strong> por su estructura interna,
-                            pero <strong>debes abrirlo y confirmar</strong> que realmente corresponde a ese componente.
-                            El nombre del archivo debe empezar con <code>{"ta_" if _tipo=="TA" else "aid_" if _tipo=="AID" else "udz_"}</code> para ser detectado automáticamente en futuras revisiones.
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                else:
-                    st.markdown(f"""
-                    <div style="border-left:4px solid #DC2626;background:#FEF2F2;padding:10px 14px;border-radius:0 6px 6px 0;margin:4px 0">
-                        <div style="font-weight:700;font-size:12px;color:#DC2626">{ICON_ERROR} ARCHIVO NO RECONOCIDO — REVISIÓN OBLIGATORIA</div>
-                        <div style="font-size:12px;color:#374151;margin-top:4px">
-                            <code>{_nombre}</code> no pudo identificarse como TA, AID ni UDZ.
-                            <strong>ábrelo manualmente</strong> y determina a qué componente pertenece.
-                            Renómbralo con <code>ta_</code>, <code>aid_</code> o <code>udz_</code> para que sea procesado correctamente.
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+        _render_udz_detectados_grid(r)
+        _render_alertas_configs_sin_tipo(r)
 
         with st.expander("GUÍA: Cómo Analizar Esta HU", expanded=False, icon=MI_GUIDE):
             guia = mostrar_guia_tipo(r.get("tipo_cambio", "DESPLIEGUE"))
@@ -670,7 +618,6 @@ def render_hu_detail(resultados, sprint_activo):
         amb_wf_info = val.get("ambiente_workflow_id", {}); amb_wf_ok = amb_wf_info.get("ok", False); amb_wf_na = amb_wf_info.get("na", False)
         udz_tx_info = val.get("udz_transmisiones", {});   udz_tx_ok = udz_tx_info.get("ok", False); udz_tx_na = udz_tx_info.get("na", False)
 
-        # Misma lista canónica de claves que usa analizar_hu, así no se desincroniza de estado_code.
         n_na  = sum(1 for k in VALIDATION_KEYS if val.get(k, {}).get("na", False))
         n_ok  = sum(1 for k in VALIDATION_KEYS if not val.get(k, {}).get("na", False) and _val_ok(val.get(k, {})))
         n_err = len(VALIDATION_KEYS) - n_na - n_ok
@@ -682,7 +629,6 @@ def render_hu_detail(resultados, sprint_activo):
         _exp_label = "Validaciones críticas — " + ("  ·  ".join(_parts) if _parts else "sin datos")
 
         with st.expander(_exp_label, expanded=True):
-            # Qué archivo exacto se está evaluando — clave cuando hay varios TA/AID/UDZ.
             _archivos_vista = []
             for _clave, _color_v in (("TA", "#0369A1"), ("AID", "#7C3AED"), ("UDZ", "#065F46")):
                 _val_arc = arcs_h.get(_clave, "")
@@ -707,7 +653,6 @@ def render_hu_detail(resultados, sprint_activo):
                     "Los tres deben estar alineados para que el flujo funcione en producción."
                 )
             with _col_refresh_val:
-                # Repetido acá para no tener que subir hasta el header a cada rato.
                 if st.button("Actualizar", key=f"refresh_val_{r.get('hu_id')}", icon=MI_REFRESH, width='stretch',
                              help="Relee los JSON y recalcula validaciones"):
                     if hu_folder:

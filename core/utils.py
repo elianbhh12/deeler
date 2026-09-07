@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 import streamlit as st
 
@@ -41,6 +42,17 @@ def get_sprints():
     if not root.exists():
         return []
     return sorted([d for d in root.iterdir() if d.is_dir()], reverse=True)
+
+
+def encontrar_hu_folder(sprint_path: Path, hu_id) -> Optional[Path]:
+    """Ubica la carpeta de una HU dentro del sprint por su ID (prefijo "id-")."""
+    hu_id_str = str(hu_id)
+    if not sprint_path or not sprint_path.exists():
+        return None
+    for d in sprint_path.iterdir():
+        if d.is_dir() and d.name.startswith(f"{hu_id_str}-"):
+            return d
+    return None
 
 
 def abrir_carpeta(ruta: Path):

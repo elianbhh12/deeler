@@ -111,9 +111,6 @@ def generar_excel_consolidado(resultados: list, guardar_en_carpeta: Path = None)
         else:
             fecha_cierre = "-"  # Sin cerrar aún
 
-        # Trazabilidad de despliegue real en PDN: se infiere de que TA/AID/UDZ
-        # ya se subieron con éxito a la tabla PDN, no de un hecho manual (ver
-        # core.analysis.obtener_estado_pdn_real).
         _pdn_real = obtener_estado_pdn_real(r)
         desplegado_pdn_por = _pdn_real["por"] or "-"
         desplegado_pdn_en_raw = _pdn_real["en"] or ""
@@ -125,11 +122,7 @@ def generar_excel_consolidado(resultados: list, guardar_en_carpeta: Path = None)
             desplegado_pdn_por, desplegado_pdn_en
         ])
 
-        # Aplicar estilos a fila: borde, centrado y una sola fuente en todo
-        # el archivo — verde/rojo solo en los íconos ✓/✗, el resto en negro.
-        # Una HU ya desplegada en PDN se resalta entera en verde claro — es
-        # el hito que de verdad importa (la HU "termina" al llegar a PDN),
-        # así se ve de un vistazo sin tener que leer columna por columna.
+        # Una HU ya desplegada en PDN se resalta entera en verde claro.
         _fill_pdn = PatternFill(start_color=_C_PDN_BG, end_color=_C_PDN_BG, fill_type="solid") if _pdn_real["desplegado"] else None
         for cell in ws[row]:
             cell.border = _BORDE
@@ -147,10 +140,6 @@ def generar_excel_consolidado(resultados: list, guardar_en_carpeta: Path = None)
 
     _bandear_filas(ws, 2, row - 1)
 
-    #  AJUSTAR ANCHO COLUMNAS al contenido real (encabezado o dato más largo
-    #  de cada columna), no a un valor fijo — así si cambia el texto de un
-    #  encabezado o el largo típico de un dato, la celda se sigue viendo
-    #  completa sin volver a tocar este número a mano.
     _autofit_columnas(ws)
 
     # Guardar a bytes

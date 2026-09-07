@@ -20,11 +20,8 @@ def ado_url(path, use_team=False):
 
 
 def _get_con_reintentos(url, headers, timeout=60, intentos=3, espera=1.5):
-    """GET con reintentos ante fallas transitorias de red (DNS, conexión
-    reseteada, timeout) — típico de una VPN corporativa bajo carga cuando se
-    hacen muchas descargas seguidas rápido: falla con algunos adjuntos, no
-    con todos, y el siguiente intento normalmente sí resuelve. No reintenta
-    errores HTTP reales (401/403/404) porque esos no se arreglan solos."""
+    """GET con reintentos ante fallas transitorias de red (conexión
+    reseteada, timeout). No reintenta errores HTTP reales (401/403/404)."""
     for intento in range(1, intentos + 1):
         try:
             return requests.get(url, headers=headers, timeout=timeout)
@@ -38,15 +35,7 @@ def _get_con_reintentos(url, headers, timeout=60, intentos=3, espera=1.5):
 def refrescar_estados_ado(sprint_folder: Path) -> int:
     """Vuelve a consultar en ADO el estado actual (System.State,
     System.ChangedDate) de las HU ya descargadas en esta carpeta, y
-    actualiza su metadata.json local.
-
-    descargar_hu() excluye a propósito las HU 'Closed' (no queremos volver a
-    traer trabajo ya cerrado), pero eso significa que una HU que se cierra en
-    ADO DESPUÉS de haberla descargado nunca se vuelve a consultar — sin este
-    refresco, el Excel y la tabla se quedan mostrando para siempre el estado
-    que tenía al momento de la descarga, aunque en ADO ya esté Closed.
-    Se llama antes de analizar (ver ui/ingest.py), no es un botón aparte.
-    """
+    actualiza su metadata.json local. Se llama antes de analizar."""
     ids_por_folder = {}
     for d in sprint_folder.iterdir():
         if not d.is_dir():
@@ -69,8 +58,7 @@ def refrescar_estados_ado(sprint_folder: Path) -> int:
         r.raise_for_status()
         items = r.json().get("value", [])
     except Exception:
-        # Best-effort: si ADO no responde (o venció el token), seguimos con
-        # el estado local que ya había — no bloqueamos el análisis por esto.
+        # Best-effort: si ADO no responde, seguimos con el estado local.
         return 0
 
     actualizados = 0
@@ -154,10 +142,8 @@ def descargar_hu(iteration_path: str):
         log_error(f"Error descargando detalles: {e}")
         return 0
 
-    # La carpeta del sprint es solo el último segmento del iteration_path
-    # (ej. "Sprint 252"), no el área completa — más corto (deja margen para
-    # el límite de 260 caracteres de Windows), más legible, y el nombre
-    # completo de cada HU ya va en su propia carpeta adentro.
+    # La carpeta del sprint usa solo el último segmento del iteration_path
+    # (ej. "Sprint 252"), para dejar margen al límite de 260 caracteres de Windows.
     _partes_iter = [p for p in iteration_path.split("\\") if p]
     _nombre_sprint_folder = safe_name(_partes_iter[-1]) if _partes_iter else "sprint"
     sprint_folder = Path(ROOT_FOLDER) / _nombre_sprint_folder
@@ -186,24 +172,13 @@ def descargar_hu(iteration_path: str):
     status_text  = st.empty()
 
     # Cuánto título de HU entra sin pasarse del límite de 260 caracteres de
-    # Windows: se calcula según el ROOT_FOLDER real (no un número fijo
-    # adivinado) — así en un ROOT_FOLDER corto el título sale casi completo,
-    # y solo se recorta lo justo y necesario cuando el ROOT_FOLDER es largo.
-    # El título importa para poder identificar la HU a simple vista en el
-    # Explorador, así que la reserva para el adjunto usa un largo realista
-    # (~85, los nombres reales rondan 60-70) en vez del máximo teórico (120,
-    # el límite que sigue permitiendo safe_name para adjuntos) — en el caso
-    # raro de un adjunto excepcionalmente largo, cargar_json ya avisa con un
-    # mensaje claro en vez de romper (ver core/analysis.py), así que vale la
-    # pena priorizar el título en el caso común.
+    # Windows, calculado según el ROOT_FOLDER real.
     _margen_archivo = 10 + 85 + 10  # "\adjuntos\" + nombre de archivo + "wid-"
     _max_len_titulo = max(30, min(120, 260 - len(str(sprint_folder)) - _margen_archivo))
 
     sin_asignar = []  # HU sin asignar para notificar al final
-    errores_zip = []  # ZIPs que no se pudieron descomprimir — el log_container
-                       # es compartido y se pisa entre attachments, así que
-                       # esto se junta acá para mostrarlo persistente al final
-    errores_descarga = []  # adjuntos que fallaron al bajar (con el motivo real)
+    errores_zip = []  # ZIPs que no se pudieron descomprimir
+    errores_descarga = []  # adjuntos que fallaron al bajar
 
     for idx, wi in enumerate(nuevos, 1):
         wid       = wi["id"]
@@ -227,12 +202,10 @@ def descargar_hu(iteration_path: str):
         # Detectar tipo de cambio: MODIFICACIÓN o DESPLIEGUE
         desc = (f.get("System.Description") or "").lower()
         if "modificación" in desc or "modificacion" in desc:
-            # Buscar respuesta: "True" = MODIFICACIÓN, "False" = DESPLIEGUE
             if "true" in desc:
                 tipo_cambio = "MODIFICACIÓN"
             elif "false" in desc:
                 tipo_cambio = "DESPLIEGUE"
-            # Fallback: buscar "sí"/"si" para casos con texto en español
             elif "sí" in desc or "si" in desc or "yes" in desc:
                 tipo_cambio = "MODIFICACIÓN"
             else:
@@ -260,10 +233,7 @@ def descargar_hu(iteration_path: str):
                 url  = rel["url"]
                 name = rel.get("attributes", {}).get("name", "adjunto.bin")
 
-                # Metadata "fantasma" de macOS (resource fork "._nombre" o
-                # ".DS_Store") — pasa también cuando se adjuntan archivos
-                # sueltos (no en un .zip) desde Mac, no solo dentro de un ZIP.
-                # Se descarta antes de gastar la descarga.
+                # Metadata "fantasma" de macOS (resource fork o .DS_Store), se descarta antes de descargar.
                 if name.startswith("._") or name == ".DS_Store":
                     log_info(f"Ignorado (metadata de macOS): {name}")
                     continue
@@ -284,16 +254,9 @@ def descargar_hu(iteration_path: str):
                                     if member.endswith("/"):
                                         continue  # entrada de carpeta, no un archivo
                                     nombre_miembro = Path(member).name
-                                    # ZIPs armados en Mac traen, por cada archivo real, una
-                                    # copia "fantasma" con metadata (resource fork) dentro de
-                                    # __MACOSX/ y con el nombre prefijado "._" — nunca es
-                                    # contenido real, se descarta siempre.
+                                    # ZIPs armados en Mac traen metadata fantasma en __MACOSX/.
                                     if "__MACOSX" in Path(member).parts or nombre_miembro.startswith("._") or nombre_miembro == ".DS_Store":
                                         continue
-                                    # Se extrae CUALQUIER archivo real (json, xlsx del RNF,
-                                    # eml, etc.) — antes había una lista fija de extensiones
-                                    # permitidas y todo lo demás se perdía en silencio (el
-                                    # ZIP original se borra después de extraer).
                                     target = adj_folder / safe_name(nombre_miembro, 120)
                                     target.write_bytes(zf.read(member))
                                     log_info(f"Extraído: {nombre_miembro}")
@@ -331,9 +294,6 @@ def descargar_hu(iteration_path: str):
             icon=MI_WARNING,
         )
 
-    #  Alerta de ZIPs que no se pudieron descomprimir — sin esto, un adjunto
-    #  que falla queda con el TA/AID/UDZ faltante y sin explicación visible,
-    #  porque el aviso de arriba (log_warning) se pisa con el siguiente log.
     if errores_zip:
         st.error(
             f"**{len(errores_zip)} adjunto(s) no se pudieron descomprimir** — esa HU va a quedar "
@@ -343,9 +303,6 @@ def descargar_hu(iteration_path: str):
             icon=MI_ERROR,
         )
 
-    #  Alerta de adjuntos que fallaron al descargarse (con el motivo real de
-    #  requests — timeout, 404, permisos, etc.), mismo problema de log que se
-    #  pisa: antes esto solo decía "Error: nombre.zip" sin explicar por qué.
     if errores_descarga:
         st.error(
             f"**{len(errores_descarga)} adjunto(s) no se pudieron descargar:**\n\n" +

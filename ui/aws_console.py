@@ -1,12 +1,10 @@
-"""Consola de subida a AWS DynamoDB — sección aparte del detalle de la HU
-(no anidada dentro de la tarjeta de validación) para que el resultado de cada
-intento, éxito o error, quede siempre visible en un log tipo terminal, igual
-que los print() que ya conocen del script `cargaaws.py`.
+"""Consola de subida a AWS DynamoDB — sección aparte del detalle de la HU,
+para que el resultado de cada intento (éxito o error) quede siempre visible
+en un log tipo terminal.
 
-Sube exactamente el TA/AID/UDZ que la HU activa (la seleccionada en "Análisis
-Técnico Detallado", arriba) tiene resuelto — no escanea una carpeta. Siempre
-intenta el envío real (sin modo simulación): si falla la conexión o las
-credenciales, el error real de AWS queda en el log.
+Sube exactamente el TA/AID/UDZ que la HU activa tiene resuelto, sin escanear
+una carpeta. El envío es siempre real: si falla la conexión o las
+credenciales, el error de AWS queda en el log.
 """
 import html
 import json
@@ -21,21 +19,15 @@ from core.analysis import _val_ok, analizar_hu, detectar_slots_udz, obtener_esta
 from core.aws_upload import subir_componente
 from core.utils import obtener_usuario_actual
 
-#  Nombres para mostrar según el tipo de UDZ detectado (ver
-#  core.analysis.detectar_slots_udz) — CRUDOS = entrada, RESULTADOS = salida
-#  (transmisión). Se usan tanto para el título largo de la tarjeta como para
-#  el texto corto del botón.
+#  Nombres para mostrar según el tipo de UDZ detectado.
 _UDZ_NOMBRE_LARGO = {"CRUDOS": "Crudos (entrada)", "RESULTADOS": "Transmisión (salida)"}
 _UDZ_NOMBRE_CORTO = {"CRUDOS": "UDZ Crudos", "RESULTADOS": "UDZ Result."}
 
-#  Tope de líneas que se guardan del log de consola — sin esto crece sin
-#  límite durante una sesión larga con muchas subidas y se vuelve pesado de
-#  renderizar. Se recorta a las más recientes, que son las que importan.
+#  Tope de líneas del log de consola, para que no crezca sin límite.
 LIMITE_LOG_LINEAS = 300
 
-#  Qué validaciones (de las 12 críticas) son el criterio de aceptación de cada
-#  componente para poder subirlo — no es un gate duro (el archivo se puede
-#  subir igual), es la señal que se muestra para decidir con confianza.
+#  Validaciones (de las 12 críticas) que son criterio de aceptación de cada
+#  componente. No es un gate duro: es la señal para decidir con confianza.
 CRITERIOS_ACEPTACION = {
     "ta": (
         ["kafka", "ta_cu_name", "ta_type_prompts", "coherencia"],
@@ -54,10 +46,8 @@ CRITERIOS_ACEPTACION = {
     ),
 }
 
-#  Archivos AID reales pueden tener decenas de steps (workflow_definition muy
-#  anidado) — renderizar eso entero con st.json() por default puede colgar el
-#  navegador. Arriba de este tamaño, se muestra una vista previa en texto
-#  truncada y el JSON completo queda a un click, no automático.
+#  Archivos AID grandes pueden colgar el navegador si se renderizan enteros
+#  con st.json(). Arriba de este tamaño, se muestra una vista previa truncada.
 LIMITE_PREVIEW_KB = 30
 
 
@@ -67,16 +57,10 @@ def _motivos_bloqueo(val: dict, keys: list) -> list:
 
 
 def _verificar_ambiente(tipo: str, val: dict, ambiente_destino: str):
-    """Antes de subir, confirma que el archivo realmente es del ambiente
-    elegido — evita mandar por error un AID/UDZ de QA a la tabla de PDN (o
-    viceversa). TA no declara ambiente en su estructura, no aplica.
-
-    AID: se fija en el ambiente que ya detectó analizar_hu a partir del
-    s3_path (debe contener "-qa-"/"-pdn-"/etc.).
-    UDZ: mismo criterio pero sobre el campo `id` del UDZ.
-
-    Si el ambiente no se pudo detectar (DESCONOCIDO), bloquea igual — no
-    hay forma de confirmar que coincide con QA/PDN, así que no se sube."""
+    """Confirma que el archivo realmente es del ambiente elegido, para evitar
+    mandar por error un AID/UDZ de QA a la tabla de PDN (o viceversa). TA no
+    declara ambiente en su estructura, no aplica. Si no se puede detectar el
+    ambiente, bloquea igual."""
     if tipo == "ta":
         return True, None
 
@@ -92,9 +76,8 @@ def _verificar_ambiente(tipo: str, val: dict, ambiente_destino: str):
     return True, None
 
 
-#  Cada línea del log llega como "[HH:MM:SS] mensaje" (ver core/aws_upload._log)
-#  — se separa la hora del mensaje para poder atenuarla visualmente y dejar
-#  el mensaje como protagonista, en vez de una sola tira de texto plana.
+#  Cada línea del log llega como "[HH:MM:SS] mensaje"; se separa la hora del
+#  mensaje para poder atenuarla visualmente.
 _TS_RE = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\]\s*(.*)$")
 
 
@@ -150,12 +133,8 @@ def _render_consola(log_lineas):
     </div>
     """, unsafe_allow_html=True)
 
-    # Auto-scroll al final: el log crece hacia abajo (lo último subido queda
-    # al fondo), así que sin esto había que scrollear adentro de la consola
-    # cada vez para ver el resultado más reciente. Va en un iframe (mismo
-    # truco que el botón "Copiar" del resumen) porque un <script> dentro de
-    # st.markdown no se ejecuta — st.iframe con HTML crudo sí permite JS con
-    # acceso al documento padre (misma app, mismo origen).
+    # Auto-scroll al final del log. Va en un iframe porque un <script> dentro
+    # de st.markdown no se ejecuta.
     st.iframe("""
     <script>
         const consolas = window.parent.document.querySelectorAll('.aws-console');
@@ -169,12 +148,9 @@ def _render_consola(log_lineas):
 
 def _agregar_al_log(label: str, ambiente: str, resultado: dict):
     """Agrega el log de un intento de subida a la consola acumulada, con un
-    separador con hora para poder distinguir un intento del siguiente en una
-    sesión larga, y recorta el total para que no crezca sin límite. También
-    suma el resultado a "_aws_lote_resultados" (ver _nuevo_lote / el aviso de
-    resultado más abajo) — con la subida masiva de varios componentes, cada
-    uno debe quedar registrado, no solo el último (si el último sale bien
-    pero uno de los anteriores falló, antes esa falla se perdía)."""
+    separador con hora, y recorta el total para que no crezca sin límite.
+    También suma el resultado a "_aws_lote_resultados" para que en una
+    subida masiva cada componente quede registrado, no solo el último."""
     log_acumulado = st.session_state.setdefault("aws_console_log", [])
     _hora = datetime.now().strftime("%H:%M:%S")
     log_acumulado.append(f"── {label.upper()} → {ambiente.upper()} · {_hora} ──")
@@ -188,17 +164,14 @@ def _agregar_al_log(label: str, ambiente: str, resultado: dict):
 
 
 def _nuevo_lote():
-    """Hay que llamar esto antes de cada acción de subida (individual o
-    masiva) para que el aviso de resultado muestre solo los componentes de
-    ESTE intento, no arrastre los de un click anterior."""
+    """Se llama antes de cada acción de subida (individual o masiva) para que
+    el aviso de resultado muestre solo los componentes de ESTE intento."""
     st.session_state["_aws_lote_resultados"] = []
 
 
 def _agregar_resumen_lote_al_log(lote: list):
-    """Cuando se suben varios componentes a la vez ("Subir los N
-    componentes"), agrega al final del log un renglón corto con el total —
-    sin esto, para saber cuántos salieron bien había que leer el detalle
-    técnico línea por línea de cada uno de los N componentes."""
+    """Cuando se suben varios componentes a la vez, agrega al final del log
+    un renglón corto con el total."""
     if len(lote) < 2:
         return
     log_acumulado = st.session_state.setdefault("aws_console_log", [])
@@ -217,13 +190,9 @@ def _agregar_resumen_lote_al_log(lote: list):
 
 
 def _render_feedback_lote():
-    """Resultado del último intento de subida (individual, "Subir los N
-    componentes" de una HU, o la subida masiva multi-HU) — con varios
-    componentes a la vez, lista TODOS los de ese intento (no solo el
-    último): si TA falla y AID/UDZ salen bien, la falla de TA no se tapa
-    con el resultado bueno de los que vinieron después. Compartido entre
-    render_aws_console y render_subida_masiva — ambos escriben al mismo
-    "_aws_lote_resultados" (ver _nuevo_lote)."""
+    """Resultado del último intento de subida (individual o masiva). Con
+    varios componentes a la vez, lista TODOS los de ese intento, no solo
+    el último."""
     _lote = st.session_state.get("_aws_lote_resultados")
     if not _lote:
         return
@@ -255,12 +224,9 @@ def _render_feedback_lote():
 
 def _construir_componentes(r: dict) -> list:
     """Arma la lista de componentes a mostrar en la consola de subida: TA y
-    AID siempre son uno solo, UDZ puede ser uno o dos (ver
-    detectar_slots_udz) — cada elemento trae "clave" (prefijo de los campos
-    de trazabilidad `{clave}_aws_por/en/ambiente/tabla`, y las claves de
-    widgets), "tipo_tabla" (ta/aid/udz — para AWS_TABLAS y subir_componente,
-    que no conocen la separación crudos/resultados, van a la misma tabla) y
-    "label" (texto para mostrar)."""
+    AID siempre son uno solo, UDZ puede ser uno o dos. Cada elemento trae
+    "clave" (prefijo de los campos de trazabilidad y claves de widgets),
+    "tipo_tabla" (ta/aid/udz, para AWS_TABLAS y subir_componente) y "label"."""
     val_principal = r.get("validaciones", {})
     componentes = [
         {"clave": "ta", "tipo_tabla": "ta", "label": "TA", "label_corto": "TA",
@@ -278,10 +244,8 @@ def _construir_componentes(r: dict) -> list:
             "archivo": s["archivo"], "val": val_principal, "validado": True,
         })
     else:
-        # El activo usa las validaciones "oficiales" (r["validaciones"]); el
-        # otro archivo tiene las suyas propias en "validaciones_udz_extra"
-        # (ver core.analysis._validar_udz_cruzadas) — ambos quedan realmente
-        # validados, no hace falta alternar cuál está activo para subir los 2.
+        # El activo usa las validaciones "oficiales"; el otro archivo tiene
+        # las suyas propias en "validaciones_udz_extra".
         _extra = r.get("validaciones_udz_extra", {})
         for s in slots_udz:
             _clave = f"udz_{s['tipo'].lower()}" if s["tipo"] else "udz_otro"
@@ -299,11 +263,9 @@ def _estado_componente(tipo_tabla: str, label: str, keys: list, archivo, val: di
                         ambiente: str, confirma_pdn: bool, validado: bool = True):
     """Calcula, para un componente, si está listo para subir y por qué no si
     no lo está — un solo lugar de verdad que usan el resumen de arriba, la
-    tarjeta individual y el botón de subida masiva, así nunca se
-    desincronizan entre sí. "validado" es False solo para un UDZ no-activo
-    de una HU analizada antes de esta función existir (analisis_tecnico.json
-    viejo, sin "validaciones_udz_extra") — ahí no hay con qué validar hasta
-    que se re-analice la HU."""
+    tarjeta individual y el botón de subida masiva. "validado" es False solo
+    para un UDZ no-activo sin "validaciones_udz_extra" guardado, donde hace
+    falta re-analizar la HU para poder validarlo."""
     archivo_perdido = bool(archivo) and not Path(archivo).exists()
     if archivo_perdido:
         archivo = None
@@ -366,10 +328,9 @@ def _render_contenido(archivo: Path, tipo: str):
 
 
 def _persistir_subida_aws(r: dict, tipo: str, ambiente: str, tabla: str, resultados: list):
-    """Registra quién subió este componente, cuándo, a qué ambiente y tabla —
-    misma idea que la trazabilidad de QA/aprobación: es un acto explícito del
-    usuario, así que se guarda en analisis_tecnico.json (no solo en el log de
-    sesión, que se pierde al recargar la página) para que quede en el Excel."""
+    """Registra quién subió este componente, cuándo, a qué ambiente y tabla,
+    en analisis_tecnico.json (no solo en el log de sesión) para que quede
+    en el Excel."""
     hu_folder_str = r.get("hu_folder")
     if not hu_folder_str:
         return
@@ -387,11 +348,6 @@ def _persistir_subida_aws(r: dict, tipo: str, ambiente: str, tabla: str, resulta
             resultados[i] = r
             break
     st.session_state["resultados"] = resultados
-
-    # El botón de subida siempre termina en st.rerun() — con esto, el próximo
-    # render de dashboard.render_kpis_y_progreso regenera el Excel solo, sin
-    # esperar a un "Re-analizar sprint" manual. Así, apenas una HU llega a
-    # PDN, el Consolidado ya la muestra resaltada en verde.
     st.session_state["_excel_pending"] = True
 
 
@@ -442,12 +398,6 @@ def render_aws_console(resultados):
 
     _render_panel_credenciales()
 
-    # Individual y masiva son dos maneras de hacer lo mismo (subir a AWS) —
-    # antes vivían una debajo de la otra, duplicando el selector de
-    # "Ambiente destino" y alargando la página al doble. Con pestañas se
-    # elige el modo una sola vez y no hay que scrollear de más; la consola
-    # y el aviso de resultado de abajo son compartidos entre las dos, para
-    # que una subida hecha en un modo no "desaparezca" al mirar el otro.
     tab_individual, tab_masiva = st.tabs(["Subida individual", "Subida masiva"])
     with tab_individual:
         _render_tab_individual(resultados)
@@ -466,6 +416,39 @@ def render_aws_console(resultados):
         st.rerun()
 
 
+def _selector_ambiente(container_key: str, radio_key: str, checkbox_key: str, texto_confirmacion: str):
+    """Radio QA/PDN + checkbox de confirmación cuando el destino es PDN, con
+    el fondo/borde de alerta del container cuando está en modo PDN. Devuelve
+    (ambiente, confirma_pdn)."""
+    with st.container(key=container_key, border=True):
+        col_amb, col_pdn = st.columns([0.3, 0.7], vertical_alignment="center")
+        with col_amb:
+            ambiente = st.radio(
+                "Ambiente destino", ["qa", "pdn"], format_func=lambda a: a.upper(),
+                horizontal=True, key=radio_key,
+            )
+        confirma_pdn = True
+        with col_pdn:
+            if ambiente == "pdn":
+                confirma_pdn = st.checkbox(
+                    f"{ICON_WARNING} {texto_confirmacion}", value=False, key=checkbox_key,
+                )
+            else:
+                st.caption("Los componentes se suben a las tablas de QA — ambiente de pruebas.")
+
+    _modo_pdn = ambiente == "pdn"
+    st.markdown(f"""
+    <style>
+    div.st-key-{container_key} {{
+        background: {"#FEF2F2" if _modo_pdn else "var(--track)"} !important;
+        border: 1.5px solid {"var(--red)" if _modo_pdn else "var(--line)"} !important;
+        border-radius: 12px !important;
+    }}
+    </style>
+    """, unsafe_allow_html=True)
+    return ambiente, confirma_pdn
+
+
 def _render_tab_individual(resultados):
     hu_id_activa = st.session_state.get("hu_activa_id")
     r = next((x for x in resultados if str(x.get("hu_id")) == str(hu_id_activa)), None)
@@ -476,52 +459,16 @@ def _render_tab_individual(resultados):
     st.caption(f"HU activa: {r.get('hu_id')} — {r.get('hu_title', '')}")
 
     # Las keys de "Ambiente destino" y la confirmación de PDN se escopan por
-    # HU (no son globales): antes eran una sola key compartida entre todas
-    # las HU, así que si dejabas "PDN" seleccionado (o la confirmación
-    # marcada) en una HU y cambiabas a otra en "Selecciona una HU", esa
-    # elección quedaba pegada — ibas a ver la alerta de "el AID parece ser
-    # de QA, no de PDN" sin haber tocado el radio vos mismo, porque en
-    # realidad seguía en el valor de la HU anterior. Al escoparlo por HU,
-    # cada HU arranca en QA sin confirmar, sin arrastrar nada de la anterior.
-    #
-    # La zona entera vive en un container con key fija ("aws_zona_ambiente")
-    # para poder pintarle un fondo/borde de alerta cuando el modo es PDN —
-    # antes el selector era un radio suelto, tan discreto como cualquier
-    # otro campo, sin nada que refuerce visualmente "estás por escribir en
-    # producción" más allá de leer la palabra en el radio.
-    with st.container(key="aws_zona_ambiente", border=True):
-        col_amb, col_pdn = st.columns([0.3, 0.7], vertical_alignment="center")
-        with col_amb:
-            ambiente = st.radio(
-                "Ambiente destino", ["qa", "pdn"], format_func=lambda a: a.upper(),
-                horizontal=True, key=f"aws_ambiente_{hu_id_activa}",
-            )
-        confirma_pdn = True
-        with col_pdn:
-            if ambiente == "pdn":
-                confirma_pdn = st.checkbox(
-                    f"{ICON_WARNING} Confirmo que quiero escribir en PRODUCCIÓN (PDN) — esto no es reversible",
-                    value=False, key=f"aws_confirma_pdn_{hu_id_activa}",
-                )
-            else:
-                st.caption("Los componentes se suben a las tablas de QA — ambiente de pruebas.")
-
-    _modo_pdn = ambiente == "pdn"
-    st.markdown(f"""
-    <style>
-    div.st-key-aws_zona_ambiente {{
-        background: {"#FEF2F2" if _modo_pdn else "var(--track)"} !important;
-        border: 1.5px solid {"var(--red)" if _modo_pdn else "var(--line)"} !important;
-        border-radius: 12px !important;
-    }}
-    </style>
-    """, unsafe_allow_html=True)
-    # Componentes a subir — TA y AID son siempre uno, UDZ puede ser uno o dos
-    # (crudos/resultados como archivos separados, ver detectar_slots_udz).
+    # HU, para que cada una arranque en QA sin confirmar y no arrastre la
+    # elección de la HU anterior.
+    ambiente, confirma_pdn = _selector_ambiente(
+        "aws_zona_ambiente", f"aws_ambiente_{hu_id_activa}", f"aws_confirma_pdn_{hu_id_activa}",
+        "Confirmo que quiero escribir en PRODUCCIÓN (PDN) — esto no es reversible",
+    )
     componentes = _construir_componentes(r)
 
-    # Un solo cálculo de estado por componente, reusado por el resumen de
-    # arriba, el botón masivo y cada tarjeta — así nunca se desincronizan.
+    # Un solo cálculo de estado por componente, reusado por el resumen, el
+    # botón masivo y cada tarjeta.
     estados = {}
     for comp in componentes:
         keys, _criterio = CRITERIOS_ACEPTACION[comp["tipo_tabla"]]
@@ -597,13 +544,6 @@ def _render_tab_individual(resultados):
                         st.session_state["resultados"] = resultados
                         st.rerun()
 
-            # Antes acá iba la descripción completa de los N criterios de
-            # aceptación (texto largo y de longitud muy distinta entre TA,
-            # AID y UDZ) — quedaba desparejo entre tarjetas. El detalle de
-            # qué falla ya se lista abajo en la alerta de "No está listo"
-            # cuando corresponde, así que acá alcanza con una línea corta y
-            # pareja; el texto completo queda como tooltip (title) al pasar
-            # el mouse, para quien lo quiera igual.
             _n_criterios = len(_criterio_keys)
             _n_motivos = len(estado["motivos"])
             if not archivo or not comp["validado"]:
@@ -674,21 +614,16 @@ def _render_tab_individual(resultados):
 
 
 def _render_tab_masiva(resultados: list):
-    """Subir varias HU del sprint de una sola vez — la pestaña individual
-    siempre opera sobre la "HU activa" (una por vez); si el sprint tiene 5
-    HU listas para QA, subirlas ahí es 5 pasadas manuales.
+    """Subir varias HU del sprint de una sola vez, en vez de pasar una por
+    una por la pestaña individual.
 
     Una HU solo aparece seleccionable si TODOS sus componentes (TA/AID/UDZ,
     incluidos ambos slots si hay crudos+resultados por separado) están
-    realmente listos para el ambiente elegido — mismo criterio que "Subir
-    los N componentes" de la pestaña individual; no sube una HU a medias.
+    realmente listos para el ambiente elegido: no sube una HU a medias.
 
-    Solo se ofrecen HU de tipo DESPLIEGUE: _construir_componentes siempre
-    arma un hueco para TA/AID/UDZ aunque una MODIFICACIÓN legítimamente no
-    toque alguno de los tres — ese hueco sin archivo cuenta como "no listo"
-    sin excepción, así que una MODIFICACIÓN nunca llegaría a 100% acá (ver
-    conversación: HU 1002 quedaba trabada en "1/3 listos" para siempre).
-    Hasta que eso se resuelva, mejor no ofrecerlas que ofrecerlas rotas."""
+    Solo se ofrecen HU de tipo DESPLIEGUE, porque una MODIFICACIÓN que
+    legítimamente no traiga alguno de los tres archivos nunca llegaría
+    a 100% acá."""
     st.markdown("""
     <div style="font-size:12px;color:#78716C;margin-bottom:14px">
         Subí varias HU de tipo DESPLIEGUE del sprint de una sola vez. Solo se puede marcar una HU si
@@ -698,53 +633,21 @@ def _render_tab_masiva(resultados: list):
     </div>
     """, unsafe_allow_html=True)
 
-    # OJO: "resultados" es la lista COMPLETA del sprint (todas las HU, todos
-    # los tipos) y hay que conservarla intacta — es la que usa
-    # _persistir_subida_aws para actualizar st.session_state["resultados"].
-    # Los distintos filtros de abajo (DESPLIEGUE, búsqueda, ocultar ya en
-    # PDN) arman una lista aparte solo para decidir qué mostrar/marcar acá;
-    # si se pisaba "resultados" con la versión filtrada, cada subida masiva
-    # borraba del estado de la app a todas las HU que no entraban en el
-    # filtro (las MODIFICACIÓN, o cualquier DESPLIEGUE tapada por el
-    # buscador) hasta el próximo "Re-analizar sprint".
+    # "resultados" es la lista completa del sprint y hay que conservarla
+    # intacta (la usa _persistir_subida_aws para actualizar session_state);
+    # los filtros de abajo arman una lista aparte solo para decidir qué
+    # mostrar/marcar.
     resultados_desplegable = [r for r in resultados if "DESP" in (r.get("tipo_cambio") or "").upper()]
 
     if not resultados_desplegable:
         st.info("No hay HU de tipo DESPLIEGUE cargadas todavía — analizá un sprint primero.", icon=MI_INFO)
         return
 
-    with st.container(key="aws_masivo_zona_ambiente", border=True):
-        col_amb, col_pdn = st.columns([0.3, 0.7], vertical_alignment="center")
-        with col_amb:
-            ambiente = st.radio(
-                "Ambiente destino", ["qa", "pdn"], format_func=lambda a: a.upper(),
-                horizontal=True, key="aws_masivo_ambiente",
-            )
-        confirma_pdn = True
-        with col_pdn:
-            if ambiente == "pdn":
-                confirma_pdn = st.checkbox(
-                    f"{ICON_WARNING} Confirmo que quiero escribir en PRODUCCIÓN (PDN) para todas las HU marcadas — esto no es reversible",
-                    value=False, key="aws_masivo_confirma_pdn",
-                )
-            else:
-                st.caption("Las HU marcadas se suben a las tablas de QA — ambiente de pruebas.")
+    ambiente, confirma_pdn = _selector_ambiente(
+        "aws_masivo_zona_ambiente", "aws_masivo_ambiente", "aws_masivo_confirma_pdn",
+        "Confirmo que quiero escribir en PRODUCCIÓN (PDN) para todas las HU marcadas — esto no es reversible",
+    )
 
-    _modo_pdn = ambiente == "pdn"
-    st.markdown(f"""
-    <style>
-    div.st-key-aws_masivo_zona_ambiente {{
-        background: {"#FEF2F2" if _modo_pdn else "var(--track)"} !important;
-        border: 1.5px solid {"var(--red)" if _modo_pdn else "var(--line)"} !important;
-        border-radius: 12px !important;
-    }}
-    </style>
-    """, unsafe_allow_html=True)
-
-    # Con un sprint chico alcanza con ver la lista entera, pero con muchas HU
-    # (ej. 65) scrollear una por una para encontrar las 5 que hacen falta no
-    # es viable — buscador por ID/título + la opción de ocultar las que ya
-    # están en PDN (ruido que no hace falta ver de nuevo).
     col_busca_masivo, col_ocultar = st.columns([0.7, 0.3], vertical_alignment="center")
     with col_busca_masivo:
         _busqueda_masivo = st.text_input(
@@ -769,12 +672,9 @@ def _render_tab_masiva(resultados: list):
         st.info("Ninguna HU coincide con estos filtros.", icon=MI_INFO)
         return
 
-    # Un solo cálculo de estado por HU (reusa exactamente la misma lógica de
-    # la consola individual) — de ahí sale si se puede marcar o no. Ojo: acá
-    # se pasa confirma_pdn=True siempre, aunque no esté tildada — la lista de
-    # qué HU están realmente listas (archivos + validaciones + ambiente) no
-    # debe depender de si ya confirmaste o no; la confirmación bloquea el
-    # BOTÓN de subir más abajo, no qué se puede marcar.
+    # Un solo cálculo de estado por HU, igual que en la consola individual.
+    # Se pasa confirma_pdn=True siempre: qué HU están listas no depende de
+    # si ya se confirmó, eso solo bloquea el botón de subir más abajo.
     _candidatas = []
     for r in resultados_desplegable:
         componentes = _construir_componentes(r)
@@ -802,19 +702,12 @@ def _render_tab_masiva(resultados: list):
     for c in sorted(_candidatas, key=lambda c: (not c["todo_listo"], str(c["r"].get("hu_id")))):
         r = c["r"]
         hu_id = r.get("hu_id")
-        # Con el filtro "Ocultar ya desplegadas en PDN" apagado (o en QA,
-        # donde no aplica ocultar), esto avisa cuáles ya se subieron antes —
-        # para no volver a mandarlas de casualidad en un lote grande.
         _ya_en_pdn = " · ✅ ya en PDN" if obtener_estado_pdn_real(r)["desplegado"] else ""
         _label = f"{hu_id} — {r.get('hu_title', '')} ({c['n_listos']}/{c['n_total']} listos){_ya_en_pdn}"
         _key = f"aws_masivo_check_{hu_id}"
         # Streamlit no pisa el valor de un checkbox ya creado con un nuevo
-        # "value" en reruns posteriores — sin esto, una HU que pasaba de "no
-        # lista" a "lista" (ej. al tildar la confirmación de PDN) se quedaba
-        # con el checkbox destildado de cuando estaba deshabilitada, en vez
-        # de aparecer preseleccionada como el resto. Se resetea al valor por
-        # default solo cuando cambia si está lista o no — si se mantiene
-        # lista entre reruns, se respeta lo que el usuario haya tildado.
+        # "value" en reruns posteriores, así que se resetea manualmente
+        # cuando cambia si la HU está lista o no.
         _prev_key = f"{_key}_prev_listo"
         if _key not in st.session_state or st.session_state.get(_prev_key) != c["todo_listo"]:
             st.session_state[_key] = c["todo_listo"]
@@ -825,8 +718,6 @@ def _render_tab_masiva(resultados: list):
     _n_hus = len(_hus_a_subir)
     _n_componentes = sum(c["n_total"] for c in _hus_a_subir)
 
-    # Acá sí pesa la confirmación de PDN — es el único punto que debe
-    # bloquearse por no haberla tildado, no la selección de arriba.
     _falta_confirmar_pdn = ambiente == "pdn" and not confirma_pdn
     if _falta_confirmar_pdn:
         _ayuda_boton = "Marcá la confirmación de PRODUCCIÓN (arriba) antes de subir"

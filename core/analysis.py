@@ -1,9 +1,7 @@
 """Motor de validación: lee TA/AID/UDZ y calcula si una HU está LISTO/ERROR/INCOMPLETO.
 
-Es el módulo más importante del proyecto — acá viven las 12 validaciones
-críticas (ver config.VALIDATION_KEYS) que deciden si una HU puede aprobarse
-para PDN. `cargar_json` usa `st.warning` para avisar de JSON inválido; fuera
-de eso, este módulo no tiene layout ni widgets de Streamlit.
+Contiene las 12 validaciones críticas (ver config.VALIDATION_KEYS) que deciden
+si una HU puede aprobarse para PDN.
 """
 import json
 from pathlib import Path
@@ -28,11 +26,8 @@ def estado_display(code: str) -> str:
 
 
 def get_estado_code(r: dict) -> str:
-    """Código de estado robusto para lógica/filtros.
-
-    Usa 'estado_code' si el resultado lo trae; si no (análisis guardados con una
-    versión anterior que solo tenía el texto con ícono), lo infiere de 'estado_general'.
-    """
+    """Código de estado robusto para lógica/filtros. Usa 'estado_code' si el
+    resultado lo trae; si no, lo infiere de 'estado_general'."""
     code = r.get("estado_code")
     if code:
         return code
@@ -47,11 +42,16 @@ def get_estado_code(r: dict) -> str:
 
 
 def _val_ok(v: dict) -> bool:
-    """Extrae el resultado 'ok' de una validación. out_zone_copiar no tiene una
-    clave 'ok' propia (usa out_zone_ok + copiar_ok), así que se calcula aparte."""
+    """Extrae el resultado 'ok' de una validación (out_zone_copiar usa
+    out_zone_ok + copiar_ok en vez de una clave 'ok' propia)."""
     if "out_zone_ok" in v:
         return bool(v.get("out_zone_ok", True)) and bool(v.get("copiar_ok", True))
     return bool(v.get("ok", True))
+
+
+def _resultado_val(ok: bool, na: bool, detalle: str, **campos) -> dict:
+    """Arma el dict estándar de una validación: {"ok", "na", "detalle", ...campos}."""
+    return {"ok": ok, "na": na, "detalle": detalle, **campos}
 
 
 #  Helpers de búsqueda en JSON
@@ -94,11 +94,8 @@ def cargar_json(path: Path):
         st.warning(f"JSON inválido en `{path.name}`: {e}", icon=MI_WARNING)
         return None
     except (FileNotFoundError, OSError) as e:
-        # En Windows, una ruta completa de más de ~260 caracteres da el mismo
-        # "No such file or directory" que un archivo realmente inexistente —
-        # aunque el archivo se vea perfecto en el Explorador. Si la ruta es
-        # sospechosamente larga, se avisa explícitamente en vez de dejar
-        # pensar que el archivo desapareció.
+        # Windows da el mismo error con rutas de más de ~260 caracteres que
+        # con un archivo inexistente, aunque el archivo exista.
         if len(str(path)) > 240:
             st.warning(
                 f"No se pudo abrir `{path.name}` — la ruta completa tiene {len(str(path))} caracteres "
@@ -187,19 +184,11 @@ def clasificar_udz_desde_json(udz_data: dict) -> str:
 
 def detectar_slots_udz(r: dict) -> list:
     """Determina en cuántos "slots" de subida a AWS se separa el UDZ de esta
-    HU. Un UDZ es CRUDOS (entrada) o RESULTADOS/transmisión (salida) — casi
-    siempre la HU trae un solo archivo UDZ (un slot), pero a veces trae los
-    dos por separado como archivos distintos, y ahí cada uno se sube y se
-    trackea por su cuenta (a veces solo hace falta uno de los dos, ej. un
-    flujo que solo lee crudos sin publicar transmisión de resultados).
+    HU. Normalmente hay un solo archivo UDZ (CRUDOS o RESULTADOS), pero a
+    veces la HU trae los dos por separado y cada uno se sube y trackea aparte.
 
-    Devuelve una lista de dicts {"tipo": "CRUDOS"/"RESULTADOS"/None,
-    "archivo": str, "es_activo": bool} — "es_activo" indica si ese archivo es
-    el mismo que `udz_activo` (el único que de verdad está validado ahora
-    mismo por las 12 validaciones críticas; ver selector "UDZ a usar" en
-    ui/hu_detail.py). Con un solo archivo, la lista siempre tiene 1 elemento
-    (comportamiento de siempre); con crudos+resultados como archivos
-    distintos, tiene 2."""
+    Devuelve una lista de dicts {"tipo", "archivo", "es_activo"} —
+    "es_activo" marca cuál coincide con `udz_activo`."""
     udz_files = r.get("udz_files") or []
     udz_activo = r.get("udz_activo")
 
@@ -214,13 +203,10 @@ def detectar_slots_udz(r: dict) -> list:
 
     tipos_presentes = {c["tipo"] for c in clasificados if c["tipo"] in ("CRUDOS", "RESULTADOS")}
     if len(tipos_presentes) < 2:
-        # Un solo tipo detectado entre los archivos (o ninguno clasificable)
-        # — se mantiene el comportamiento de siempre: un solo slot, con el
-        # archivo activo elegido en el análisis.
         tipo_unico = next(iter(tipos_presentes), None)
         return [{"tipo": tipo_unico, "archivo": udz_activo, "es_activo": True}]
 
-    # CRUDOS y RESULTADOS como archivos distintos — dos slots independientes.
+    # CRUDOS y RESULTADOS como archivos distintos: dos slots independientes.
     slots = []
     for tipo in ("CRUDOS", "RESULTADOS"):
         c = next((c for c in clasificados if c["tipo"] == tipo), None)
@@ -230,15 +216,12 @@ def detectar_slots_udz(r: dict) -> list:
 
 
 def obtener_estado_pdn_real(r: dict) -> dict:
-    """Si la HU realmente quedó desplegada en PDN — no un checkbox que
-    cualquiera puede marcar, sino el hecho de que TODOS sus componentes
+    """Si la HU realmente quedó desplegada en PDN: TODOS sus componentes
     presentes (TA/AID/UDZ, incluyendo ambos slots si hay crudos+resultados
-    separados) ya se subieron con éxito a la tabla de PDN (ver
-    ui.aws_console._persistir_subida_aws, que graba `{clave}_aws_ambiente`
-    y `{clave}_aws_por` en cada subida real).
+    separados) ya se subieron con éxito a la tabla de PDN.
 
-    Devuelve {"desplegado": bool, "por": str|None, "en": str|None} — "por"/"en"
-    son de la última subida entre los componentes (quien cerró el despliegue)."""
+    Devuelve {"desplegado": bool, "por": str|None, "en": str|None} de la
+    última subida entre los componentes."""
     componentes = []
     if r.get("ta_activo"):
         componentes.append("ta")
@@ -274,10 +257,7 @@ def buscar_archivos(hu_folder: Path):
         if f.suffix != ".json":
             continue
         if f.name.startswith("._"):
-            # Metadata "fantasma" que deja un ZIP armado en Mac (resource fork)
-            # — no es contenido real. Ya se filtra al descomprimir
-            # (core/ado_client.py), esto es una segunda barrera por si el
-            # archivo ya estaba en disco de una descarga anterior a ese fix.
+            # Metadata "fantasma" de resource fork de Mac en ZIPs, no es contenido real.
             continue
         stem = f.stem.lower()
 
@@ -350,11 +330,9 @@ def buscar_rnf(hu_folder: Path):
 
 def _validar_udz_cruzadas(aid: dict, wf: str, aid_s3: str, udz: dict, es_despliegue: bool) -> dict:
     """Las 4 validaciones que cruzan AID con un UDZ puntual (s3_path,
-    workflow_vs_id, ambiente_workflow_id, udz_transmisiones). Factorizado
-    para poder correrlo tanto sobre el UDZ activo (las validaciones
-    "oficiales" de la HU) como sobre el otro archivo UDZ cuando la HU trae
-    crudos y resultados por separado — así ambos quedan realmente validados
-    y no hace falta alternar cuál está activo para poder subir los dos a AWS."""
+    workflow_vs_id, ambiente_workflow_id, udz_transmisiones). Se corre tanto
+    sobre el UDZ activo como sobre el otro archivo cuando la HU trae
+    crudos y resultados por separado, para poder subir los dos a AWS."""
     _udz_item = udz.get("item") if udz else None
     _udz_root = udz if isinstance(udz, dict) else {}
     udz_s3 = (_udz_item.get("s3_path", "") if isinstance(_udz_item, dict) else "") or _udz_root.get("s3_path", "")
@@ -367,7 +345,7 @@ def _validar_udz_cruzadas(aid: dict, wf: str, aid_s3: str, udz: dict, es_desplie
     udz_id = (_udz_item.get("id", "") if isinstance(_udz_item, dict) else "") or _udz_root.get("id", "")
 
     # s3_path: CRUDOS exige ruta idéntica a AID; RESULTADOS exige la misma
-    # ruta con "crudos" -> "resultados" (ver nota en analizar_hu original).
+    # ruta con "crudos" -> "resultados".
     _udz_tipo_s3 = clasificar_udz_desde_json(udz) if udz else "DESCONOCIDO"
     s3_na = not (aid_s3 and udz_s3)
     if aid_s3 and udz_s3:
@@ -453,9 +431,8 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
     title  = meta.get("title", "?")
     arcs   = buscar_archivos(hu_folder)
 
-    # Si no se pasó un override explícito para esta llamada (ej. "Actualizar" o
-    # "Re-analizar sprint"), se respeta la última elección de TA/UDZ guardada en
-    # disco — así el usuario no tiene que re-elegir cada vez que hay varios.
+    # Sin override explícito, se respeta la última elección de TA/AID/UDZ
+    # guardada en disco para no tener que re-elegir cada vez.
     out_path = hu_folder / "analisis" / "analisis_tecnico.json"
     _anterior = cargar_json(out_path) if out_path.exists() else None
     if not ta_override and _anterior and _anterior.get("ta_activo"):
@@ -524,13 +501,9 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
     es_despliegue = "DESPLIEGUE" in tipo_cambio
 
     faltantes = [k for k, v in {"TA": ta, "AID": aid, "UDZ": udz}.items() if not v]
-    # DESPLIEGUE requiere los 3 archivos sin excepción — se marca INCOMPLETO,
-    # pero NO se corta acá: el análisis sigue de largo y calcula las 12
-    # validaciones igual (cada una ya sabe tratar ta/aid/udz=None como error
-    # cuando es_despliegue, ver los "(not es_despliegue)" de más abajo). Antes
-    # se retornaba temprano con "validaciones" vacío, y como la UI usa
-    # ok=True por default cuando no encuentra una clave, terminaba mostrando
-    # "12 correctas" — al revés de lo que pasaba en realidad.
+    # DESPLIEGUE requiere los 3 archivos sin excepción. Se marca INCOMPLETO
+    # pero el análisis sigue de largo y calcula las 12 validaciones igual
+    # (cada una trata ta/aid/udz=None como error cuando es_despliegue).
     incompleto_por_archivos = es_despliegue and bool(faltantes)
     if faltantes:
         if es_despliegue:
@@ -541,13 +514,7 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
             for archivo in faltantes:
                 resultado["resumen"].append(f"{ICON_WARNING} {archivo}: no adjuntado — solo se valida lo que llegó en la HU")
 
-    # Las 4 validaciones cruzadas AID<->UDZ (s3_path, workflow_vs_id,
-    # ambiente_workflow_id, udz_transmisiones), factorizadas en
-    # _validar_udz_cruzadas: acá se corren para el UDZ activo (las
-    # validaciones "oficiales" de la HU). Si la HU trae crudos y resultados
-    # como archivos separados, más abajo se vuelven a correr para el otro
-    # archivo, así ambos quedan realmente validados para poder subirlos a
-    # AWS sin tener que alternar cuál está activo.
+    # Validaciones cruzadas AID<->UDZ sobre el UDZ activo.
     aid_s3 = aid.get("s3_path","") if aid else ""
     wf = aid.get("workflow_name","") if aid else ""
     _cross_activo = _validar_udz_cruzadas(aid, wf, aid_s3, udz, es_despliegue)
@@ -557,8 +524,7 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
     resultado["validaciones"]["udz_transmisiones"] = _cross_activo["udz_transmisiones"]
 
     # UDZ trae crudos y resultados como archivos separados: validar también
-    # el otro archivo (no solo el activo), para que la consola de AWS pueda
-    # dejar subir los dos sin tener que alternar "UDZ a usar".
+    # el otro archivo para poder subir los dos sin alternar "UDZ a usar".
     _slots_udz = detectar_slots_udz(resultado)
     if len(_slots_udz) > 1:
         resultado["validaciones_udz_extra"] = {}
@@ -585,35 +551,31 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
         kf_ok = not es_despliegue  # sin TA en MODIFICACIÓN → no bloquea (ya es N/A por kf_na)
     else:
         kf_ok = False  # TA existe pero no tiene kafka_output_topic — error real, no falso OK
-    resultado["validaciones"]["kafka"] = {
-        "ok": kf_ok,
-        "na": kf_na and not es_despliegue,
-        "topic": topic,
-        "topics": topic_vals,
-        "detalle": f"{ICON_OK} kafka_output_topic correcto" if kf_ok else f"{ICON_ERROR} Encontrado: {', '.join(topic_vals) if topic_vals else 'VACÍO'}"
-    }
+    resultado["validaciones"]["kafka"] = _resultado_val(
+        kf_ok, kf_na and not es_despliegue,
+        f"{ICON_OK} kafka_output_topic correcto" if kf_ok else f"{ICON_ERROR} Encontrado: {', '.join(topic_vals) if topic_vals else 'VACÍO'}",
+        topic=topic, topics=topic_vals,
+    )
 
     # TA: cu_name obligatorio
     ta_cu_name = buscar_clave(ta, "cu_name") or "" if ta else ""
     ta_cu_na = not bool(ta)
     ta_cu_ok = bool(ta_cu_name) if ta else (not es_despliegue)
-    resultado["validaciones"]["ta_cu_name"] = {
-        "ok": ta_cu_ok,
-        "na": ta_cu_na and not es_despliegue,
-        "cu_name": ta_cu_name,
-        "detalle": f"{ICON_OK} TA contiene cu_name" if ta_cu_ok else f"{ICON_ERROR} TA debe incluir 'cu_name'"
-    }
+    resultado["validaciones"]["ta_cu_name"] = _resultado_val(
+        ta_cu_ok, ta_cu_na and not es_despliegue,
+        f"{ICON_OK} TA contiene cu_name" if ta_cu_ok else f"{ICON_ERROR} TA debe incluir 'cu_name'",
+        cu_name=ta_cu_name,
+    )
 
     # TA: type debe ser "prompts"
     ta_type = buscar_clave(ta, "type") if ta else ""
     ta_type_na = not bool(ta)
     ta_type_ok = str(ta_type).strip().lower() == "prompts" if ta else (not es_despliegue)
-    resultado["validaciones"]["ta_type_prompts"] = {
-        "ok": ta_type_ok,
-        "na": ta_type_na and not es_despliegue,
-        "type": ta_type,
-        "detalle": f"{ICON_OK} TA type='prompts'" if ta_type_ok else f"{ICON_ERROR} TA type inválido: {ta_type or 'VACÍO'}"
-    }
+    resultado["validaciones"]["ta_type_prompts"] = _resultado_val(
+        ta_type_ok, ta_type_na and not es_despliegue,
+        f"{ICON_OK} TA type='prompts'" if ta_type_ok else f"{ICON_ERROR} TA type inválido: {ta_type or 'VACÍO'}",
+        type=ta_type,
+    )
 
     # AID: workflow_variables.tecnologia debe ser "AID"
     aid_tecnologia = ""
@@ -621,12 +583,11 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
         aid_tecnologia = aid["workflow_variables"].get("tecnologia", "")
     aid_tec_na = not bool(aid)
     aid_tec_ok = str(aid_tecnologia).strip().upper() == "AID" if aid else (not es_despliegue)
-    resultado["validaciones"]["aid_tecnologia"] = {
-        "ok": aid_tec_ok,
-        "na": aid_tec_na and not es_despliegue,
-        "tecnologia": aid_tecnologia,
-        "detalle": f"{ICON_OK} tecnologia='AID'" if aid_tec_ok else f"{ICON_ERROR} tecnologia inválida: {aid_tecnologia or 'VACÍO'}"
-    }
+    resultado["validaciones"]["aid_tecnologia"] = _resultado_val(
+        aid_tec_ok, aid_tec_na and not es_despliegue,
+        f"{ICON_OK} tecnologia='AID'" if aid_tec_ok else f"{ICON_ERROR} tecnologia inválida: {aid_tecnologia or 'VACÍO'}",
+        tecnologia=aid_tecnologia,
+    )
 
     # AID: TYPE debe ser "topic" en cada step, salvo excepciones conocidas
     # (ej. un step final que solo escribe/guarda resultados) — ver AID_TYPE_VALIDOS.
@@ -637,13 +598,11 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
 
     aid_type_na = not bool(aid)
     aid_type_ok = all(str(t).strip().lower() in AID_TYPE_VALIDOS for t in aid_type_vals) if aid_type_vals else (not es_despliegue)
-    resultado["validaciones"]["aid_type_topic"] = {
-        "ok": aid_type_ok,
-        "na": aid_type_na and not es_despliegue,
-        "type": aid_type,
-        "types": aid_type_vals,
-        "detalle": f"{ICON_OK} TYPE válido" if aid_type_ok else f"{ICON_ERROR} TYPE inválido: {', '.join(str(t) for t in aid_type_vals) if aid_type_vals else 'VACÍO'}"
-    }
+    resultado["validaciones"]["aid_type_topic"] = _resultado_val(
+        aid_type_ok, aid_type_na and not es_despliegue,
+        f"{ICON_OK} TYPE válido" if aid_type_ok else f"{ICON_ERROR} TYPE inválido: {', '.join(str(t) for t in aid_type_vals) if aid_type_vals else 'VACÍO'}",
+        type=aid_type, types=aid_type_vals,
+    )
 
     # Ambiente consistente entre AID (workflow_name) y UDZ (id)
     # ambiente
@@ -663,13 +622,11 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
         nom_ok = use_case == cu_name
     else:
         nom_ok = not es_despliegue
-    resultado["validaciones"]["coherencia"] = {
-        "ok": nom_ok,
-        "na": coh_na and not es_despliegue,
-        "use_case": use_case,
-        "cu_name": cu_name,
-        "detalle": f"{ICON_OK} {use_case}" if nom_ok else f"{ICON_WARNING} AID use_case: {use_case} | TA cu_name: {cu_name}"
-    }
+    resultado["validaciones"]["coherencia"] = _resultado_val(
+        nom_ok, coh_na and not es_despliegue,
+        f"{ICON_OK} {use_case}" if nom_ok else f"{ICON_WARNING} AID use_case: {use_case} | TA cu_name: {cu_name}",
+        use_case=use_case, cu_name=cu_name,
+    )
 
     # criticos se calcula más abajo, después de out_zone_ok/copiar_ok
 
@@ -683,13 +640,11 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
     ls_na = not bool(aid)
     last_step_ok = all(str(v).lower() == "false" for v in last_step_vals) if last_step_vals else (not es_despliegue)
 
-    resultado["validaciones"]["last_step"] = {
-        "ok": last_step_ok,
-        "na": ls_na and not es_despliegue,
-        "valores": last_step_vals,
-        "encontrado": len(last_step_vals) > 0,
-        "detalle": f"{ICON_OK} LAST_STEP en False" if last_step_ok else f"{ICON_ERROR} LAST_STEP: {last_step_vals}"
-    }
+    resultado["validaciones"]["last_step"] = _resultado_val(
+        last_step_ok, ls_na and not es_despliegue,
+        f"{ICON_OK} LAST_STEP en False" if last_step_ok else f"{ICON_ERROR} LAST_STEP: {last_step_vals}",
+        valores=last_step_vals, encontrado=len(last_step_vals) > 0,
+    )
 
     # out_zone y copiarResultadoBucket (validar por cada STEP_VARIABLES)
     # NOTA: SOLO si existe un step con FUNCTION_NAME = "call_api" Y tiene STEP_VARIABLES
@@ -794,9 +749,8 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
         if not resultado["validaciones"].get(k, {}).get("na", False)
     ]
     if incompleto_por_archivos:
-        # DESPLIEGUE sin TA/AID/UDZ: aunque las validaciones individuales ya
-        # quedaron marcadas como error (correctamente), el estado general es
-        # INCOMPLETO, no ERROR — todavía no hay ni los archivos base.
+        # DESPLIEGUE sin TA/AID/UDZ: el estado general es INCOMPLETO, no
+        # ERROR, porque todavía no hay ni los archivos base.
         resultado["estado_code"] = ESTADO_INCOMPLETO
     else:
         resultado["estado_code"] = ESTADO_LISTO if all(criticos) else ESTADO_ERROR
@@ -806,17 +760,11 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
     resultado["analizado_por"] = obtener_usuario_actual()
     resultado["analizado_en"] = datetime.now().isoformat()
 
-    # La confirmación de que se probó en QA es un acto explícito del usuario,
-    # no algo que se recalcula solo. Si ya existía en el análisis guardado
-    # previamente, se conserva al re-analizar (ya se leyó arriba en
-    # _anterior, para no leer el archivo dos veces).
+    # La confirmación de QA y la subida a AWS son actos explícitos del
+    # usuario por componente: se conservan al re-analizar.
     if _anterior:
         campos_a_conservar = ["probado_qa_por", "probado_qa_en", "probado_qa_estado_code",
                                "rnf_copiado_por", "rnf_copiado_en"]
-        # Trazabilidad de subida a AWS: igual, es un acto explícito por
-        # componente (ta/aid/udz), se conserva al re-analizar. udz_crudos y
-        # udz_resultados son los slots separados cuando la HU trae ambos
-        # tipos de UDZ como archivos distintos (ver detectar_slots_udz).
         for _tipo_aws in ("ta", "aid", "udz", "udz_crudos", "udz_resultados"):
             campos_a_conservar += [f"{_tipo_aws}_aws_ambiente", f"{_tipo_aws}_aws_por",
                                     f"{_tipo_aws}_aws_en", f"{_tipo_aws}_aws_tabla"]

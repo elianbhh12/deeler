@@ -6,7 +6,7 @@ from datetime import datetime
 import streamlit as st
 
 from core.config import (
-    ITERATION_PATH, ROOT_FOLDER, SPRINTS_FRECUENTES, _sprint_default_num,
+    ITERATION_PATH, ROOT_FOLDER, SPRINTS_FRECUENTES, _sprint_default_num, ADO_CONFIG_FALTANTE,
     MI_DOWNLOAD, MI_ERROR, MI_OK, MI_WARNING, MI_INFO, MI_REFRESH, MI_FOLDER,
 )
 from core.ado_client import descargar_hu, refrescar_estados_ado
@@ -20,6 +20,12 @@ def render_paso1_paso2(sprints_locales):
     with col_paso1:
         st.markdown("""<div class="step-card-label">Paso 1 <span class="step-sub">— traer HU nuevas desde Azure DevOps</span></div>""", unsafe_allow_html=True)
         st.markdown("""<div class="step-card-help">Sprint a consultar en ADO (por número)</div>""", unsafe_allow_html=True)
+
+        if ADO_CONFIG_FALTANTE:
+            st.warning(
+                f"Falta configurar en `.env`: {', '.join(ADO_CONFIG_FALTANTE)} — sin esto no se puede descargar desde ADO.",
+                icon=MI_WARNING,
+            )
 
         _opts = SPRINTS_FRECUENTES
         _default_idx = _opts.index(_sprint_default_num) if _sprint_default_num in _opts else 0
@@ -45,16 +51,15 @@ def render_paso1_paso2(sprints_locales):
         else:
             sprint_input = base_path
 
-        if st.button("Descargar HU", width='stretch', type="primary", key="btn_descargar", icon=MI_DOWNLOAD):
+        if st.button("Descargar HU", width='stretch', type="primary", key="btn_descargar", icon=MI_DOWNLOAD,
+                     disabled=bool(ADO_CONFIG_FALTANTE),
+                     help=None if not ADO_CONFIG_FALTANTE else f"Falta configurar en .env: {', '.join(ADO_CONFIG_FALTANTE)}"):
             if not sprint_input:
                 st.error("Selecciona un sprint", icon=MI_ERROR)
             else:
                 with st.spinner("Descargando desde ADO..."):
                     n = descargar_hu(sprint_input)
                 if n > 0:
-                    # st.toast (no st.success) porque el rerun de abajo borra
-                    # cualquier mensaje inline antes de que se llegue a leer
-                    # — el toast sí sobrevive al rerun, queda flotando.
                     st.toast(f"{n} HU descargadas", icon=MI_OK)
                     st.rerun()
                 else:
@@ -95,10 +100,6 @@ def render_paso1_paso2(sprints_locales):
             if st.button(_btn_label, width='stretch', type="primary", key="btn_analizar", disabled=not sprint_sel_name, icon=MI_REFRESH):
                 sprint_path = Path(ROOT_FOLDER) / sprint_sel_name
                 with st.spinner("Analizando TA, AID, UDZ..."):
-                    # Antes de analizar, refresca el estado real en ADO de las
-                    # HU ya descargadas — así una HU que se cerró en ADO
-                    # después de bajarla no se queda mostrando "activa" para
-                    # siempre (ver core/ado_client.refrescar_estados_ado).
                     refrescar_estados_ado(sprint_path)
                     resultados_new = analizar_sprint(sprint_path)
                 st.toast(f"{len(resultados_new)} HU analizadas", icon=MI_OK)
