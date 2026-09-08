@@ -8,16 +8,18 @@ credenciales, el error de AWS queda en el log.
 """
 import html
 import json
+import os
 import re
+import uuid
 from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
 
-from core.config import ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, MI_CLOUD, MI_INFO, MI_REFRESH, MI_SETTINGS, MI_OK, MI_ERROR, MI_SEARCH, AWS_TABLAS, AWS_CRED_FILE
-from core.analysis import _val_ok, analizar_hu, detectar_slots_udz, obtener_estado_pdn_real
+from core.config import ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, MI_CLOUD, MI_INFO, MI_REFRESH, MI_SETTINGS, MI_OK, MI_ERROR, MI_SEARCH, AWS_TABLAS, AWS_CRED_FILE, ROOT_FOLDER
+from core.analysis import _val_ok, analizar_hu, clasificar_udz_desde_json, detectar_ambiente, detectar_slots_udz, normalizar_s3, obtener_estado_pdn_real
 from core.aws_upload import subir_componente
-from core.utils import obtener_usuario_actual
+from core.utils import obtener_usuario_actual, safe_name
 
 #  Nombres para mostrar según el tipo de UDZ detectado.
 _UDZ_NOMBRE_LARGO = {"CRUDOS": "Crudos (entrada)", "RESULTADOS": "Transmisión (salida)"}
@@ -50,30 +52,139 @@ CRITERIOS_ACEPTACION = {
 #  con st.json(). Arriba de este tamaño, se muestra una vista previa truncada.
 LIMITE_PREVIEW_KB = 30
 
+#  Carga directa (sin HU): carpeta donde queda el registro de auditoría y una
+#  copia de cada archivo subido así, ya que no hay carpeta de HU donde dejarlo.
+CARGAS_DIRECTAS_DIR = "_cargas_directas"
+LIMITE_CARGAS_DIRECTAS = 500
+
 
 def _motivos_bloqueo(val: dict, keys: list) -> list:
     """Validaciones relevantes para este componente que están en error (no N/A)."""
     return [k for k in keys if not val.get(k, {}).get("na", False) and not _val_ok(val.get(k, {}))]
 
 
-def _verificar_ambiente(tipo: str, val: dict, ambiente_destino: str):
-    """Confirma que el archivo realmente es del ambiente elegido, para evitar
-    mandar por error un AID/UDZ de QA a la tabla de PDN (o viceversa). TA no
-    declara ambiente en su estructura, no aplica. Si no se puede detectar el
-    ambiente, bloquea igual."""
+def _evaluar_ambiente(tipo: str, detectado, ambiente_destino: str, nombre: str = None, detalle: str = "declare"):
+    """Núcleo compartido de la regla "el archivo debe declarar el mismo
+    ambiente al que se lo manda": TA no aplica, sin detección o DESCONOCIDO
+    bloquea, y un ambiente distinto al destino también bloquea. Usado tanto
+    por el flujo de HU (_verificar_ambiente) como por la carga directa
+    (_verificar_ambiente_directo)."""
     if tipo == "ta":
         return True, None
+    nombre = nombre or tipo.upper()
+    if not detectado or detectado == "DESCONOCIDO":
+        return False, f"No se pudo detectar el ambiente del {nombre} — revisá que {detalle} '{ambiente_destino}'"
+    if detectado.upper() != ambiente_destino.upper():
+        return False, f"El {nombre} parece ser de {detectado}, no de {ambiente_destino.upper()} — no se sube"
+    return True, None
 
+
+def _verificar_ambiente(tipo: str, val: dict, ambiente_destino: str):
+    """Confirma que el archivo realmente es del ambiente elegido, para evitar
+    mandar por error un AID/UDZ de QA a la tabla de PDN (o viceversa)."""
     if tipo == "aid":
         detectado = val.get("ambiente", {}).get("ambiente")
-    else:  # udz
+    else:  # udz (ta nunca llega acá, _evaluar_ambiente ya lo resuelve)
         detectado = val.get("ambiente_workflow_id", {}).get("udz_ambiente")
+    return _evaluar_ambiente(tipo, detectado, ambiente_destino, nombre=tipo.upper(), detalle="el s3_path/id contenga")
 
-    if not detectado or detectado == "DESCONOCIDO":
-        return False, f"No se pudo detectar el ambiente del {tipo.upper()} — revisá que el s3_path/id contenga '{ambiente_destino}'"
-    if detectado.upper() != ambiente_destino.upper():
-        return False, f"El {tipo.upper()} parece ser de {detectado}, no de {ambiente_destino.upper()} — no se sube"
-    return True, None
+
+def _detectar_ambiente_directo(tipo_tabla: str, data) -> str:
+    """Mismo criterio que _verificar_ambiente, pero leyendo el ambiente
+    directo del JSON crudo (sin pasar por analizar_hu, porque acá no hay HU).
+    TA no declara ambiente en su estructura — devuelve None (no aplica)."""
+    if tipo_tabla == "ta":
+        return None
+    if not isinstance(data, dict):
+        return "DESCONOCIDO"
+    if tipo_tabla == "aid":
+        valor = data.get("s3_path", "")
+    else:  # udz
+        item = data.get("item") if isinstance(data.get("item"), dict) else data
+        valor = item.get("id", "") or item.get("s3_path", "")
+    return detectar_ambiente(valor) if valor else "DESCONOCIDO"
+
+
+def _verificar_ambiente_directo(tipo_tabla: str, amb_archivo, ambiente_destino: str):
+    """Igual que _verificar_ambiente, pero para la carga directa (sin HU)."""
+    return _evaluar_ambiente(tipo_tabla, amb_archivo, ambiente_destino, nombre="archivo")
+
+
+def _validar_cruce_flujo(items: list) -> dict:
+    """Chequeo liviano entre el AID y el UDZ de un mismo flujo (mismo
+    criterio de s3_path y workflow_name↔id que usa _validar_udz_cruzadas para
+    HU, sin las otras 10 validaciones). Es informativo, no bloquea la subida
+    — con varios AID o UDZ en el mismo flujo no hay forma de saber cuál va
+    con cuál, así que se compara el primero de cada uno como mejor esfuerzo.
+    Devuelve {índice_en_items: mensaje} solo para los que no coinciden."""
+    aids = [(i, it) for i, it in enumerate(items) if it.get("tipo_tabla") == "aid" and isinstance(it.get("data"), dict)]
+    udzs = [(i, it) for i, it in enumerate(items) if it.get("tipo_tabla") == "udz" and isinstance(it.get("data"), dict)]
+    avisos = {}
+    if not aids or not udzs:
+        return avisos
+
+    idx_aid, aid_item = aids[0]
+    idx_udz, udz_item = udzs[0]
+    aid_data = aid_item["data"]
+    udz_data = udz_item["data"]
+    aid_s3 = aid_data.get("s3_path", "")
+    wf = aid_data.get("workflow_name", "")
+    _udz_root = udz_data.get("item") if isinstance(udz_data.get("item"), dict) else udz_data
+    udz_s3 = _udz_root.get("s3_path", "")
+    udz_id = _udz_root.get("id", "")
+
+    _motivos = []
+    if aid_s3 and udz_s3:
+        tipo_udz = clasificar_udz_desde_json(udz_data)
+        esperado = normalizar_s3(aid_s3).replace("crudos", "resultados") if tipo_udz == "RESULTADOS" else normalizar_s3(aid_s3)
+        if normalizar_s3(udz_s3) != esperado:
+            _motivos.append(f"s3_path del UDZ ({udz_s3}) no coincide con el esperado del AID ({esperado})")
+    if wf and udz_id and wf != udz_id:
+        _motivos.append(f"workflow_name del AID ({wf}) no coincide con el id del UDZ ({udz_id})")
+
+    if _motivos:
+        avisos[idx_udz] = " · ".join(_motivos)
+    return avisos
+
+
+def _registrar_carga_directa(tipo_tabla: str, ambiente: str, tabla: str, archivo_original: str,
+                              archivo_guardado: Path, referencia: str, ok: bool):
+    """Deja constancia de una carga sin HU asociada — no hay carpeta de HU
+    donde guardar esto, así que se lleva un log JSON aparte en ROOT_FOLDER."""
+    log_path = Path(ROOT_FOLDER) / CARGAS_DIRECTAS_DIR / "log.json"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        registros = json.loads(log_path.read_text(encoding="utf-8")) if log_path.exists() else []
+    except Exception:
+        registros = []
+    registros.append({
+        "en": datetime.now().isoformat(),
+        "por": obtener_usuario_actual(),
+        "tipo": tipo_tabla,
+        "ambiente": ambiente,
+        "tabla": tabla,
+        "archivo_original": archivo_original,
+        "archivo_guardado": str(archivo_guardado),
+        "referencia": referencia,
+        "ok": ok,
+    })
+    if len(registros) > LIMITE_CARGAS_DIRECTAS:
+        registros = registros[-LIMITE_CARGAS_DIRECTAS:]
+    # Escritura atómica (temp + replace): si algo interrumpe la escritura a
+    # mitad de camino, el log.json existente no queda corrupto.
+    _tmp_path = log_path.with_suffix(".tmp")
+    _tmp_path.write_text(json.dumps(registros, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(_tmp_path, log_path)
+
+
+def _leer_cargas_directas() -> list:
+    log_path = Path(ROOT_FOLDER) / CARGAS_DIRECTAS_DIR / "log.json"
+    if not log_path.exists():
+        return []
+    try:
+        return json.loads(log_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
 
 
 #  Cada línea del log llega como "[HH:MM:SS] mensaje"; se separa la hora del
@@ -386,6 +497,236 @@ def _render_panel_credenciales():
                     st.rerun()
 
 
+def _adivinar_tipo_por_nombre(nombre: str) -> str:
+    """Solo una sugerencia de default para el selectbox — el usuario siempre
+    puede corregirla, así que un nombre ambiguo no rompe nada."""
+    stem = Path(nombre).stem.lower()
+    if "aid" in stem:
+        return "aid"
+    if "udz" in stem:
+        return "udz"
+    return "ta"
+
+
+def _render_flujo_directo(flujo_id: int, ambiente: str, confirma_pdn: bool) -> dict:
+    """Un flujo = un grupo de archivos (ej. TA+AID+UDZ de un mismo pedido)
+    con su propia referencia. Devuelve {"nombre", "items": [...]} con el
+    estado ya calculado de cada archivo."""
+    with st.container(key=f"aws_directa_flujo_{flujo_id}", border=True):
+        col_nombre, col_quitar = st.columns([0.85, 0.15], vertical_alignment="center")
+        with col_nombre:
+            nombre_flujo = st.text_input(
+                "Referencia / motivo de este flujo", value=f"Flujo {flujo_id}",
+                key=f"aws_directa_ref_{flujo_id}",
+            )
+        with col_quitar:
+            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            # Se puede quitar aunque sea el único flujo — si queda en cero,
+            # "+ Agregar otro flujo" de abajo siempre está para empezar de nuevo.
+            if st.button("Quitar flujo", key=f"aws_directa_quitar_{flujo_id}", width='stretch'):
+                st.session_state["aws_directa_flujos"].remove(flujo_id)
+                st.rerun()
+
+        archivos_subidos = st.file_uploader(
+            "Archivos JSON de este flujo (TA, AID, UDZ...)", type=["json"], accept_multiple_files=True,
+            key=f"aws_directa_files_{flujo_id}",
+        )
+        if not archivos_subidos:
+            st.caption("Sin archivos todavía en este flujo.")
+            return {"nombre": nombre_flujo, "items": []}
+
+        _tipos = ["ta", "aid", "udz"]
+        items = []
+        cols = st.columns(len(archivos_subidos), gap="medium")
+        for idx, (archivo, col) in enumerate(zip(archivos_subidos, cols)):
+            with col:
+                try:
+                    texto = archivo.getvalue().decode("utf-8")
+                    data = json.loads(texto)
+                    error_json = None
+                except Exception as e:
+                    texto, data, error_json = "", None, str(e)
+
+                _default_tipo = _adivinar_tipo_por_nombre(archivo.name)
+                # Key por nombre+tamaño (no por posición idx): si el usuario
+                # saca un archivo del uploader, los que quedan se corren de
+                # posición y una key por idx reusaría la selección de tipo de
+                # otro archivo distinto.
+                _file_key = f"{archivo.name}_{archivo.size}"
+                tipo_tabla = st.selectbox(
+                    archivo.name, _tipos, index=_tipos.index(_default_tipo), format_func=lambda t: t.upper(),
+                    key=f"aws_directa_tipo_{flujo_id}_{_file_key}",
+                )
+                item = {"archivo": archivo, "texto": texto, "data": data, "tipo_tabla": tipo_tabla, "_col": col}
+
+                if error_json:
+                    item["puede_subir"] = False
+                    st.markdown(
+                        f'<div class="aws-card warn"><div class="aws-card-title">{ICON_ERROR} JSON inválido</div>'
+                        f'<div class="aws-card-criterio">{html.escape(error_json)}</div></div>',
+                        unsafe_allow_html=True,
+                    )
+                    items.append(item)
+                    continue
+
+                tabla_destino = AWS_TABLAS.get(ambiente, {}).get(tipo_tabla, "(sin configurar)")
+                amb_archivo = _detectar_ambiente_directo(tipo_tabla, data)
+                amb_ok, amb_motivo = _verificar_ambiente_directo(tipo_tabla, amb_archivo, ambiente)
+                item["tabla_destino"] = tabla_destino
+
+                amb_linea = f'<div class="aws-table-tag"><b>Ambiente:</b> {amb_archivo}</div>' if amb_archivo else ""
+                st.markdown(
+                    f'<div class="aws-card {"ok" if amb_ok else "warn"}">'
+                    f'<div class="aws-card-title">{ICON_OK if amb_ok else ICON_WARNING} {tipo_tabla.upper()}</div>'
+                    f'<div class="aws-table-tag"><b>Tabla:</b> {tabla_destino}</div>'
+                    f'{amb_linea}'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                if not amb_ok:
+                    st.markdown(f"""
+                    <div class="aws-alert" style="background:#FEE2E2;border-color:#FCA5A5;color:#991B1B">
+                        <b>{ICON_ERROR} Ambiente no coincide:</b> {html.escape(amb_motivo)}
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                tam_kb = len(texto.encode("utf-8")) / 1024
+                if tam_kb <= LIMITE_PREVIEW_KB:
+                    with st.expander("Ver contenido", expanded=False):
+                        st.json(data)
+                else:
+                    with st.expander(f"Ver contenido — archivo grande ({tam_kb:.0f} KB)", expanded=False):
+                        st.caption("Vista previa truncada para no colgar el navegador.")
+                        st.code(texto[:2000] + ("\n…(truncado)" if len(texto) > 2000 else ""), language="json")
+
+                item["puede_subir"] = amb_ok and (ambiente != "pdn" or confirma_pdn)
+                items.append(item)
+
+        # Chequeo liviano AID↔UDZ del mismo flujo — informativo, no bloquea.
+        _avisos_cruce = _validar_cruce_flujo(items)
+        for _idx_aviso, _motivo in _avisos_cruce.items():
+            with items[_idx_aviso]["_col"]:
+                st.markdown(f"""
+                <div class="aws-alert" style="background:#FFFBEB;border-color:#FDE68A;color:#92400E">
+                    <b>{ICON_WARNING} Revisar contra el AID de este flujo:</b> {html.escape(_motivo)}
+                </div>
+                """, unsafe_allow_html=True)
+
+        for _it in items:
+            _it.pop("_col", None)
+            _it.pop("data", None)
+
+        return {"nombre": nombre_flujo, "items": items}
+
+
+def _render_tab_directa():
+    """Subir uno o varios flujos sueltos sin HU asociada (trabajo a demanda).
+    Un flujo es un grupo de archivos (ej. TA+AID+UDZ de un mismo pedido) con
+    su propia referencia — se puede cargar uno solo o agregar varios a la vez,
+    igual que "individual" vs "masiva" en el flujo por HU. No pasa por las 12
+    validaciones críticas (dependen de datos de la HU que acá no existen) —
+    sí se verifica que cada archivo declare el ambiente al que se lo manda.
+    Queda registrado en un log aparte porque no hay carpeta de HU donde
+    dejar esa trazabilidad."""
+    st.markdown("""
+    <div style="font-size:12px;color:#78716C;margin-bottom:14px">
+        Para cuando piden subir uno o varios flujos puntuales sin pasar por una HU del backlog.
+        Cada flujo es un grupo de archivos (ej. TA+AID+UDZ de un mismo pedido) con su propia
+        referencia — agregá más flujos si tenés que subir varios pedidos distintos a la vez.
+        No corre las 12 validaciones críticas — sí se chequea el ambiente de cada archivo antes
+        de subir, y queda un registro de auditoría propio.
+    </div>
+    """, unsafe_allow_html=True)
+
+    ambiente, confirma_pdn = _selector_ambiente(
+        "aws_directa_zona_ambiente", "aws_directa_ambiente", "aws_directa_confirma_pdn",
+        "Confirmo que quiero escribir en PRODUCCIÓN (PDN) para todos los flujos de abajo — esto no es reversible",
+    )
+
+    if "aws_directa_flujos" not in st.session_state:
+        st.session_state["aws_directa_flujos"] = [1]
+        st.session_state["_aws_directa_next_id"] = 2
+
+    flujos_ids = st.session_state["aws_directa_flujos"]
+    flujos = [_render_flujo_directo(fid, ambiente, confirma_pdn) for fid in flujos_ids]
+
+    if st.button("+ Agregar otro flujo", key="aws_directa_add_flujo"):
+        _nuevo_id = st.session_state.get("_aws_directa_next_id", 2)
+        st.session_state["aws_directa_flujos"].append(_nuevo_id)
+        st.session_state["_aws_directa_next_id"] = _nuevo_id + 1
+        st.rerun()
+
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+    _todos_items = [(f["nombre"], it) for f in flujos for it in f["items"]]
+    _n_total = len(_todos_items)
+    if _n_total == 0:
+        st.info("Subí al menos un archivo en algún flujo para continuar.", icon=MI_INFO)
+        _render_historial_cargas_directas()
+        return
+
+    _n_listos = sum(1 for _, it in _todos_items if it["puede_subir"])
+
+    if ambiente == "pdn" and not confirma_pdn:
+        _ayuda_boton = "Marcá la confirmación de PRODUCCIÓN (arriba) antes de subir"
+    elif _n_listos == 0:
+        _ayuda_boton = "Ningún archivo está listo para subir — revisá el tipo y el ambiente de cada uno"
+    else:
+        _ayuda_boton = None
+
+    st.markdown(f"""
+    <div class="aws-summary-strip">
+        <div class="aws-summary-text">{ICON_OK if _n_listos == _n_total else ICON_WARNING} {_n_listos} de {_n_total} listos para subir a {ambiente.upper()} en {len(flujos)} flujo(s)</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.button(
+        f"Subir {_n_listos} de {_n_total} archivo(s) a {ambiente.upper()}", key=f"aws_directa_subir_{ambiente}",
+        width='stretch', icon=MI_CLOUD, type="primary", disabled=_n_listos == 0, help=_ayuda_boton,
+    ):
+        _nuevo_lote()
+        for nombre_flujo, it in _todos_items:
+            if not it["puede_subir"]:
+                continue
+            archivo = it["archivo"]
+            tipo_tabla = it["tipo_tabla"]
+            # Sufijo random además del timestamp: dos archivos subidos en el
+            # mismo segundo (ej. dos flujos con "aid.json" en el mismo lote)
+            # no deben pisarse la copia guardada uno al otro.
+            _timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            _sufijo = uuid.uuid4().hex[:6]
+            _carpeta_archivos = Path(ROOT_FOLDER) / CARGAS_DIRECTAS_DIR / "archivos"
+            _carpeta_archivos.mkdir(parents=True, exist_ok=True)
+            _ruta_guardada = _carpeta_archivos / f"{_timestamp}_{_sufijo}_{tipo_tabla}_{safe_name(archivo.name, 100)}"
+            _ruta_guardada.write_text(it["texto"], encoding="utf-8")
+
+            with st.spinner(f"Subiendo {nombre_flujo} · {archivo.name} ({tipo_tabla.upper()}) a {ambiente.upper()}..."):
+                resultado = subir_componente(tipo_tabla, _ruta_guardada, ambiente=ambiente)
+            _agregar_al_log(f"{nombre_flujo} · {tipo_tabla.upper()} · {archivo.name}", ambiente, resultado)
+            _registrar_carga_directa(
+                tipo_tabla, ambiente, resultado.get("tabla", it.get("tabla_destino")),
+                archivo.name, _ruta_guardada, nombre_flujo, bool(resultado.get("ok")),
+            )
+        _agregar_resumen_lote_al_log(st.session_state.get("_aws_lote_resultados", []))
+        st.rerun()
+
+    _render_historial_cargas_directas()
+
+
+def _render_historial_cargas_directas():
+    historial = _leer_cargas_directas()
+    if historial:
+        with st.expander(f"Historial de cargas directas ({len(historial)})", icon=MI_INFO, expanded=False):
+            for reg in reversed(historial[-20:]):
+                icono = ICON_OK if reg.get("ok") else ICON_ERROR
+                ref = f" — {reg['referencia']}" if reg.get("referencia") else ""
+                fecha = (reg.get("en") or "")[:16].replace("T", " ")
+                st.caption(
+                    f"{icono} {fecha} · {reg.get('tipo','').upper()} → {reg.get('ambiente','').upper()} · "
+                    f"{reg.get('por','')} · {reg.get('archivo_original','')}{ref}"
+                )
+
+
 def render_aws_console(resultados):
     st.divider()
     st.markdown("""
@@ -398,11 +739,13 @@ def render_aws_console(resultados):
 
     _render_panel_credenciales()
 
-    tab_individual, tab_masiva = st.tabs(["Subida individual", "Subida masiva"])
+    tab_individual, tab_masiva, tab_directa = st.tabs(["Subida individual", "Subida masiva", "Carga directa (sin HU)"])
     with tab_individual:
         _render_tab_individual(resultados)
     with tab_masiva:
         _render_tab_masiva(resultados)
+    with tab_directa:
+        _render_tab_directa()
 
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
     _render_feedback_lote()
@@ -486,9 +829,9 @@ def _render_tab_individual(resultados):
     </div>
     """, unsafe_allow_html=True)
 
-    with st.container(key="aws_subir_todos_wrap"):
+    with st.container(key=f"aws_subir_todos_wrap_{ambiente}"):
         if st.button(
-            f"Subir los {_n_total} componentes", key="aws_console_subir_todos", width='stretch',
+            f"Subir los {_n_total} componentes", key=f"aws_console_subir_todos_{ambiente}", width='stretch',
             icon=MI_CLOUD, type="primary", disabled=not _todos_listos,
             help=None if _todos_listos else "Todos los componentes deben estar listos (sin alertas) para usar esta opción",
         ):
@@ -503,6 +846,19 @@ def _render_tab_individual(resultados):
             _agregar_resumen_lote_al_log(st.session_state.get("_aws_lote_resultados", []))
             st.rerun()
 
+    # Cuando el UDZ viene separado en Crudos+Resultados como archivos
+    # distintos, hay 2 tarjetas de UDZ en vez de 1 — se agrupan visualmente
+    # para que se vea como "un mismo componente en 2 partes", no como un error.
+    _udz_claves_orden = [c["clave"] for c in componentes if c["tipo_tabla"] == "udz"]
+    _udz_partes = {clave: i + 1 for i, clave in enumerate(_udz_claves_orden)}
+    _es_udz_dividido = len(_udz_partes) > 1
+    if _es_udz_dividido:
+        st.markdown("""
+        <div style="background:#ECFEFF;border:1px solid #A5F3FC;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:#0E7490">
+            🔗 <b>UDZ separado en 2 partes</b> — esta HU trae Crudos y Resultados como archivos distintos, hay que subir las dos para completar el componente UDZ.
+        </div>
+        """, unsafe_allow_html=True)
+
     cols = st.columns(_n_total, gap="medium")
 
     for comp, col in zip(componentes, cols):
@@ -516,6 +872,7 @@ def _render_tab_individual(resultados):
             listo = estado["listo"]
             icono = ICON_OK if listo else (ICON_WARNING if archivo else ICON_NA)
             cls_card = "ok" if listo else ("warn" if archivo else "na")
+            _es_parte_udz = _es_udz_dividido and clave in _udz_partes
 
             ultima_subida = ""
             if r.get(f"{clave}_aws_por"):
@@ -524,6 +881,13 @@ def _render_tab_individual(resultados):
                 ultima_subida = (
                     f'<span class="aws-chip">{ICON_OK} <b>{html.escape(_amb_prev)}</b> · '
                     f'{html.escape(r[f"{clave}_aws_por"])} · {_fecha}</span>'
+                )
+
+            badge_grupo = ""
+            if _es_parte_udz:
+                badge_grupo = (
+                    f'<span class="aws-chip" style="background:#ECFEFF;color:#0E7490;border-color:#A5F3FC">'
+                    f'🔗 UDZ · parte {_udz_partes[clave]} de {len(_udz_partes)}</span>'
                 )
 
             col_titulo, col_refresh = st.columns([0.82, 0.18], vertical_alignment="center")
@@ -553,13 +917,23 @@ def _render_tab_individual(resultados):
             else:
                 _criterio_corto = f"{ICON_OK} Cumple los {_n_criterios} requisitos de aceptación"
 
-            st.markdown(f"""
-            <div class="aws-card {cls_card}" style="border-top-left-radius:0;border-top-right-radius:0;margin-top:-8px">
-                <div class="aws-card-criterio" title="{html.escape(criterio_txt)}">{_criterio_corto}</div>
-                <div class="aws-table-tag"><b>Tabla:</b> {tabla_destino}</div>
-                {ultima_subida}
-            </div>
-            """, unsafe_allow_html=True)
+            _estilo_card = "border-top-left-radius:0;border-top-right-radius:0;margin-top:-8px"
+            if _es_parte_udz:
+                _estilo_card += ";border-left:3px solid #06B6D4"
+            # Todo en una sola línea (sin saltos): un placeholder vacío
+            # ({badge_grupo}/{ultima_subida} cuando no aplican) en su propia
+            # línea deja una línea en blanco en medio del bloque, y Markdown
+            # corta ahí el HTML crudo — el resto de la tarjeta queda mostrado
+            # como texto/código en vez de renderizarse.
+            st.markdown(
+                f'<div class="aws-card {cls_card}" style="{_estilo_card}">'
+                f'{badge_grupo}'
+                f'<div class="aws-card-criterio" title="{html.escape(criterio_txt)}">{_criterio_corto}</div>'
+                f'<div class="aws-table-tag"><b>Tabla:</b> {tabla_destino}</div>'
+                f'{ultima_subida}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
             if not comp["validado"]:
                 st.markdown(f"""
@@ -599,9 +973,9 @@ def _render_tab_individual(resultados):
             if archivo:
                 _render_contenido(Path(archivo), clave)
 
-            with st.container(key=f"aws_subir_wrap_{clave}"):
+            with st.container(key=f"aws_subir_wrap_{clave}_{ambiente}"):
                 if st.button(
-                    f"Subir {comp['label_corto']}", key=f"aws_console_subir_{clave}", width='stretch',
+                    f"Subir {comp['label_corto']}", key=f"aws_console_subir_{clave}_{ambiente}", width='stretch',
                     icon=MI_CLOUD, disabled=not estado["puede_subir"], help=estado["ayuda"],
                 ):
                     _nuevo_lote()
@@ -657,6 +1031,8 @@ def _render_tab_masiva(resultados: list):
     with col_ocultar:
         _ocultar_en_pdn = st.checkbox(
             "Ocultar ya desplegadas en PDN", value=True, key="aws_masivo_ocultar_pdn",
+            disabled=ambiente != "pdn",
+            help=None if ambiente == "pdn" else "Solo aplica cuando el ambiente destino es PDN — para subir a QA se muestran igual las HU ya desplegadas en PDN.",
         )
 
     if _busqueda_masivo.strip():
@@ -665,7 +1041,9 @@ def _render_tab_masiva(resultados: list):
             r for r in resultados_desplegable
             if _q_masivo in str(r.get("hu_id", "")).lower() or _q_masivo in r.get("hu_title", "").lower()
         ]
-    if _ocultar_en_pdn:
+    # El filtro de "ya en PDN" solo tiene sentido para evitar re-subir a PDN
+    # de nuevo — si el destino es QA, ocultarlas dejaría sin poder subirlas.
+    if _ocultar_en_pdn and ambiente == "pdn":
         resultados_desplegable = [r for r in resultados_desplegable if not obtener_estado_pdn_real(r)["desplegado"]]
 
     if not resultados_desplegable:
@@ -729,7 +1107,7 @@ def _render_tab_masiva(resultados: list):
     st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
     if st.button(
         f"Subir {_n_hus} HU seleccionadas ({_n_componentes} componentes) a {ambiente.upper()}",
-        key="aws_masivo_subir", width='stretch', icon=MI_CLOUD, type="primary",
+        key=f"aws_masivo_subir_{ambiente}", width='stretch', icon=MI_CLOUD, type="primary",
         disabled=_n_hus == 0 or _falta_confirmar_pdn, help=_ayuda_boton,
     ):
         _nuevo_lote()

@@ -28,8 +28,9 @@ def test_buscar_clave_todos_acumula_todas_las_ocurrencias(appmod):
     ("s3://bucket-pdn-x/resultados", "PDN"),
     ("s3://bucket-prod-x/resultados", "PDN"),
     ("s3://bucket-qa-x/resultados", "QA"),
-    ("s3://bucket-dev-x/resultados", "DEV"),
-    ("s3://bucket-uat-x/resultados", "UAT"),
+    ("s3://bucket-pdn/resultados", "PDN"),  # sin guion al final del token
+    ("s3://bucket-dev-x/resultados", "DESCONOCIDO"),  # solo existen PDN y QA
+    ("s3://bucket-uat-x/resultados", "DESCONOCIDO"),
     ("s3://bucket-x/resultados", "DESCONOCIDO"),
 ])
 def test_detectar_ambiente(appmod, s3, esperado):

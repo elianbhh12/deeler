@@ -480,8 +480,8 @@ def render_hu_detail(resultados, sprint_activo):
         tipo_h = r.get("tipo_cambio", "?")
 
         def _arc_chip(key, color):
-            val = arcs_h.get(key, " NO EXISTE")
-            ok  = "NO" not in val
+            val = arcs_h.get(key, f"{ICON_ERROR} NO EXISTE")
+            ok  = ICON_ERROR not in val
             icon = ICON_OK if ok else ICON_ERROR
             name = val if ok else "no encontrado"
             c = color if ok else "#DC2626"
@@ -632,7 +632,7 @@ def render_hu_detail(resultados, sprint_activo):
             _archivos_vista = []
             for _clave, _color_v in (("TA", "#0369A1"), ("AID", "#7C3AED"), ("UDZ", "#065F46")):
                 _val_arc = arcs_h.get(_clave, "")
-                if "NO" not in _val_arc:
+                if ICON_ERROR not in _val_arc:
                     _archivos_vista.append(
                         f"<span style='display:inline-flex;align-items:center;gap:4px;background:#fff;"
                         f"border:1.5px solid {_color_v};border-radius:6px;padding:3px 9px;font-size:11.5px;"
@@ -910,7 +910,7 @@ def render_hu_detail(resultados, sprint_activo):
                 with col2:
                     st.markdown("**UDZ id encontrado:**")
                     st.code(uid_val or "(vacío)", language="text")
-                st.markdown("**Regla:** Deben ser exactamente iguales, incluyendo ambiente (qa/pdn/dev)")
+                st.markdown("**Regla:** Deben ser exactamente iguales, incluyendo ambiente (qa/pdn)")
                 if wf_val and uid_val and wf_val != uid_val:
                     st.error(f"{ICON_ERROR} **Mismatch detectado**")
                     st.info(f'**Cambiar en AID** → `Ctrl+F: workflow_name`\n```json\n"workflow_name": "{uid_val}"\n```')
@@ -955,17 +955,17 @@ def render_hu_detail(resultados, sprint_activo):
                     st.markdown("**UDZ id encontrado:**")
                     st.code(udz_id or "(vacío)", language="text")
                     st.caption(f"Ambiente detectado: **{udz_amb}**")
-                st.markdown("**Regla:** Ambos deben apuntar al mismo ambiente (qa, pdn, dev)")
+                st.markdown("**Regla:** Ambos deben apuntar al mismo ambiente (qa, pdn)")
                 if aid_amb != udz_amb and aid_amb != "DESCONOCIDO" and udz_amb != "DESCONOCIDO":
                     st.error(f"{ICON_ERROR} **Mismatch de ambiente:** AID={aid_amb} pero UDZ={udz_amb}")
-            val_card(amb_wf_ok, "Ambiente — workflow_name = id (qa/pdn/dev)", f"{_f_aid} & {_f_udz}",
+            val_card(amb_wf_ok, "Ambiente — workflow_name = id (qa/pdn)", f"{_f_aid} & {_f_udz}",
                      "AID y UDZ deben apuntar al mismo ambiente operativo", _amb_wf_detail,
                      na=amb_wf_na, campo="AID.workflow_name ↔ UDZ.item.id",
                      valor_ok=(aid_amb if aid_amb != "DESCONOCIDO" else None))
 
         _arcs_r = r.get("archivos", {})
-        _presentes  = [k for k in ("TA", "AID", "UDZ") if "NO" not in _arcs_r.get(k, "NO")]
-        _faltan_arc = [k for k in ("TA", "AID", "UDZ") if "NO" in _arcs_r.get(k, "NO")]
+        _presentes  = [k for k in ("TA", "AID", "UDZ") if ICON_ERROR not in _arcs_r.get(k, ICON_ERROR)]
+        _faltan_arc = [k for k in ("TA", "AID", "UDZ") if ICON_ERROR in _arcs_r.get(k, ICON_ERROR)]
         if r.get("rnf_path"):
             _presentes.append("RNF")
         else:

@@ -4,6 +4,7 @@ Contiene las 12 validaciones críticas (ver config.VALIDATION_KEYS) que deciden
 si una HU puede aprobarse para PDN.
 """
 import json
+import re
 from pathlib import Path
 from datetime import datetime
 
@@ -118,11 +119,13 @@ def normalizar_s3(p):
 
 
 def detectar_ambiente(s3):
+    """Detecta el ambiente (PDN o QA, los únicos dos que existen) buscando el
+    token como palabra completa — así matchea tanto "-pdn-" (en medio de la
+    ruta) como "-pdn" al final o "pdn-" al principio, no solo rodeado de
+    guiones en ambos lados. Cualquier otra cosa es DESCONOCIDO."""
     s = s3.lower()
-    if "-pdn-" in s or "-prod-" in s: return "PDN"
-    if "-qa-"  in s: return "QA"
-    if "-dev-" in s: return "DEV"
-    if "-uat-" in s: return "UAT"
+    if re.search(r"\b(pdn|prod)\b", s): return "PDN"
+    if re.search(r"\bqa\b", s): return "QA"
     return "DESCONOCIDO"
 
 
@@ -597,7 +600,12 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
     aid_type = aid_type_vals[0] if aid_type_vals else ""
 
     aid_type_na = not bool(aid)
-    aid_type_ok = all(str(t).strip().lower() in AID_TYPE_VALIDOS for t in aid_type_vals) if aid_type_vals else (not es_despliegue)
+    if aid_type_vals:
+        aid_type_ok = all(str(t).strip().lower() in AID_TYPE_VALIDOS for t in aid_type_vals)
+    elif not aid:
+        aid_type_ok = not es_despliegue
+    else:
+        aid_type_ok = False  # AID existe pero no se encontró TYPE en ningún step — error real, no falso OK
     resultado["validaciones"]["aid_type_topic"] = _resultado_val(
         aid_type_ok, aid_type_na and not es_despliegue,
         f"{ICON_OK} TYPE válido" if aid_type_ok else f"{ICON_ERROR} TYPE inválido: {', '.join(str(t) for t in aid_type_vals) if aid_type_vals else 'VACÍO'}",
@@ -638,7 +646,12 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
 
     # Validación: todos deben ser "False"
     ls_na = not bool(aid)
-    last_step_ok = all(str(v).lower() == "false" for v in last_step_vals) if last_step_vals else (not es_despliegue)
+    if last_step_vals:
+        last_step_ok = all(str(v).lower() == "false" for v in last_step_vals)
+    elif not aid:
+        last_step_ok = not es_despliegue
+    else:
+        last_step_ok = False  # AID existe pero no se encontró LAST_STEP — error real, no falso OK
 
     resultado["validaciones"]["last_step"] = _resultado_val(
         last_step_ok, ls_na and not es_despliegue,
@@ -765,7 +778,30 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
     if _anterior:
         campos_a_conservar = ["probado_qa_por", "probado_qa_en", "probado_qa_estado_code",
                                "rnf_copiado_por", "rnf_copiado_en"]
-        for _tipo_aws in ("ta", "aid", "udz", "udz_crudos", "udz_resultados"):
+        # Si el archivo activo de ta/aid/udz cambió (ej. el usuario eligió
+        # otro TA en el selector de hu_detail.py), la trazabilidad de subida a
+        # AWS que había es de OTRO archivo — no debe arrastrarse, o la app
+        # mostraría un archivo nuevo como "ya subido" sin haberlo subido.
+        _tipos_sin_cambio_activo = [
+            _tipo for _tipo, _clave_activo in (("ta", "ta_activo"), ("aid", "aid_activo"), ("udz", "udz_activo"))
+            if resultado.get(_clave_activo) == _anterior.get(_clave_activo)
+        ]
+        # Mismo chequeo para los slots udz_crudos/udz_resultados (UDZ separado
+        # en dos archivos): si el archivo físico de ese slot cambió, tampoco
+        # se arrastra su trazabilidad de AWS.
+        _archivo_por_clave = {}
+        for _s in _slots_udz:
+            _clave_s = f"udz_{_s['tipo'].lower()}" if (_s["tipo"] and len(_slots_udz) > 1) else "udz"
+            _archivo_por_clave[_clave_s] = _s["archivo"]
+        _slots_anterior = detectar_slots_udz(_anterior)
+        _archivo_por_clave_anterior = {}
+        for _s in _slots_anterior:
+            _clave_s = f"udz_{_s['tipo'].lower()}" if (_s["tipo"] and len(_slots_anterior) > 1) else "udz"
+            _archivo_por_clave_anterior[_clave_s] = _s["archivo"]
+        for _tipo_aws in ("udz_crudos", "udz_resultados"):
+            if _archivo_por_clave.get(_tipo_aws) == _archivo_por_clave_anterior.get(_tipo_aws):
+                _tipos_sin_cambio_activo.append(_tipo_aws)
+        for _tipo_aws in _tipos_sin_cambio_activo:
             campos_a_conservar += [f"{_tipo_aws}_aws_ambiente", f"{_tipo_aws}_aws_por",
                                     f"{_tipo_aws}_aws_en", f"{_tipo_aws}_aws_tabla"]
         for campo in campos_a_conservar:

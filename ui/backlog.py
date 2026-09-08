@@ -99,14 +99,14 @@ def render_tabla_resumen(resultados):
 
         def _arc_badge(key):
             val_arc = arcs.get(key, "")
-            if "NO" not in val_arc:
+            if ICON_ERROR not in val_arc:
                 return ICON_OK
             return ICON_ERROR if es_desp else ICON_NA  # N/A = no aplica en modificación
 
         ta_ok  = _arc_badge("TA")
         aid_ok = _arc_badge("AID")
         udz_ok = _arc_badge("UDZ")
-        rnf_ok = ICON_OK if "NO" not in arcs.get("RNF", "") else ICON_ERROR
+        rnf_ok = ICON_OK if ICON_WARNING not in arcs.get("RNF", "") else ICON_ERROR
 
         _pdn_real = obtener_estado_pdn_real(r)
         if _pdn_real["desplegado"]:
