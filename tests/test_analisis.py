@@ -417,3 +417,43 @@ def test_udz_con_un_solo_archivo_no_genera_validaciones_extra(appmod, tmp_path):
     r = appmod.analizar_hu(hu_folder)
 
     assert "validaciones_udz_extra" not in r
+
+
+#  Regresión: subir un componente a QA después de subirlo a PDN no debe
+#  borrar el estado de "ya desplegado en PDN" (los dos ambientes se registran
+#  por separado, no se pisan entre sí — ver ui.aws_console._persistir_subida_aws)
+
+def test_obtener_estado_pdn_real_con_registro_por_ambiente(appmod):
+    r = {
+        "ta_activo": "ta.json", "aid_activo": "aid.json", "udz_files": [],
+        "ta_aws_pdn_por": "ana", "ta_aws_pdn_en": "2026-01-01T10:00:00",
+        "aid_aws_pdn_por": "ana", "aid_aws_pdn_en": "2026-01-01T10:01:00",
+        "udz_aws_pdn_por": "ana", "udz_aws_pdn_en": "2026-01-01T10:02:00",
+        # Actividad más reciente: el mismo TA se volvió a subir a QA después.
+        "ta_aws_ambiente": "qa", "ta_aws_por": "ana", "ta_aws_en": "2026-02-01T09:00:00",
+    }
+    estado = appmod.obtener_estado_pdn_real(r)
+    assert estado["desplegado"] is True, "una subida posterior a QA no debe borrar el estado de PDN"
+    assert estado["por"] == "ana"
+
+
+def test_obtener_estado_pdn_real_compatibilidad_con_registro_viejo(appmod):
+    """Análisis guardados antes de separar el registro por ambiente solo
+    tienen el campo plano '_aws_ambiente' — debe seguir funcionando mientras
+    ese componente no se haya vuelto a subir a otro ambiente desde entonces."""
+    r = {
+        "ta_activo": "ta.json", "aid_activo": None, "udz_files": [],
+        "ta_aws_ambiente": "pdn", "ta_aws_por": "ana", "ta_aws_en": "2026-01-01T10:00:00",
+    }
+    estado = appmod.obtener_estado_pdn_real(r)
+    assert estado["desplegado"] is True
+    assert estado["por"] == "ana"
+
+
+def test_obtener_estado_pdn_real_qa_sin_pdn_previo_no_desplegado(appmod):
+    r = {
+        "ta_activo": "ta.json", "aid_activo": None, "udz_files": [],
+        "ta_aws_ambiente": "qa", "ta_aws_por": "ana", "ta_aws_en": "2026-01-01T10:00:00",
+    }
+    estado = appmod.obtener_estado_pdn_real(r)
+    assert estado["desplegado"] is False

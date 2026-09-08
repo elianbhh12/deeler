@@ -14,7 +14,7 @@ from .config import (
     ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA,
     ESTADO_LISTO, ESTADO_ERROR, ESTADO_INCOMPLETO, ESTADO_SIN_METADATA,
     ESTADO_ICON, ESTADO_TEXTO, VALIDATION_KEYS, KAFKA_TOPIC_REQUERIDO,
-    AID_TYPE_VALIDOS, MI_WARNING,
+    AID_TYPE_VALIDOS, MI_WARNING, AWS_AMBIENTES,
 )
 from .utils import obtener_usuario_actual
 
@@ -242,9 +242,16 @@ def obtener_estado_pdn_real(r: dict) -> dict:
 
     subidas = []
     for clave in componentes:
-        if r.get(f"{clave}_aws_ambiente") != "pdn" or not r.get(f"{clave}_aws_por"):
+        # "_aws_pdn_por" es el registro específico de PDN (no se pisa si
+        # después se sube el mismo componente a QA). Los "_aws_ambiente/_por"
+        # sin ambiente son compatibilidad con análisis viejos, de antes de
+        # separar el registro por ambiente — solo sirven mientras ese
+        # componente no se haya vuelto a subir a otro ambiente desde entonces.
+        _por = r.get(f"{clave}_aws_pdn_por") or (r.get(f"{clave}_aws_por") if r.get(f"{clave}_aws_ambiente") == "pdn" else None)
+        if not _por:
             return {"desplegado": False, "por": None, "en": None}
-        subidas.append((r.get(f"{clave}_aws_en") or "", r.get(f"{clave}_aws_por")))
+        _en = r.get(f"{clave}_aws_pdn_en") or r.get(f"{clave}_aws_en") or ""
+        subidas.append((_en, _por))
 
     subidas.sort()
     _en, _por = subidas[-1]
@@ -804,6 +811,9 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
         for _tipo_aws in _tipos_sin_cambio_activo:
             campos_a_conservar += [f"{_tipo_aws}_aws_ambiente", f"{_tipo_aws}_aws_por",
                                     f"{_tipo_aws}_aws_en", f"{_tipo_aws}_aws_tabla"]
+            for _amb_aws in AWS_AMBIENTES:
+                campos_a_conservar += [f"{_tipo_aws}_aws_{_amb_aws}_por", f"{_tipo_aws}_aws_{_amb_aws}_en",
+                                        f"{_tipo_aws}_aws_{_amb_aws}_tabla"]
         for campo in campos_a_conservar:
             if _anterior.get(campo):
                 resultado[campo] = _anterior[campo]

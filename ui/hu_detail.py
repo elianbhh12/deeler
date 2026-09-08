@@ -18,6 +18,7 @@ from core.config import (
 from core.analysis import get_estado_code, cargar_json, clasificar_udz_desde_json, normalizar_s3, _val_ok, analizar_hu, detectar_slots_udz, obtener_estado_pdn_real
 from core.utils import abrir_archivo, obtener_usuario_actual, encontrar_hu_folder
 from core.guide import mostrar_guia_tipo
+from ui.aws_console import render_recuperacion_pdn
 
 
 def _generar_resumen_resolution(r: dict) -> tuple:
@@ -581,6 +582,7 @@ def render_hu_detail(resultados, sprint_activo):
                 "al ambiente PDN en la consola 'Subir a AWS' (más abajo).",
                 icon=MI_INFO,
             )
+            render_recuperacion_pdn(r, resultados)
 
         _texto_resumen, _completo_resumen = _generar_resumen_resolution(r)
 

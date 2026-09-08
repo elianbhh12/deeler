@@ -128,3 +128,73 @@ def subir_componente(tipo: str, archivo: Path, ambiente: str = "qa") -> dict:
         _log(f"AVISO: no se pudo verificar la escritura (el put_item sí fue OK): {e}")
 
     return {"ok": True, "tabla": tabla, "archivo": archivo.name, "log": log}
+
+
+def verificar_en_tabla(tipo: str, archivo: Path, ambiente: str = "pdn") -> dict:
+    """Confirma si el item de este archivo ya existe en la tabla DynamoDB del
+    ambiente indicado, SIN volver a subirlo (solo get_item). Sirve para
+    recuperar el estado de "desplegado en PDN" cuando la trazabilidad local
+    se perdió (ej. se pisó al subir el mismo componente a QA después) pero el
+    dato real ya está en AWS. Devuelve {existe, tabla, log}."""
+    log = []
+
+    def _log(linea):
+        log.append(f"[{datetime.now().strftime('%H:%M:%S')}] {linea}")
+
+    tabla = AWS_TABLAS.get(ambiente, {}).get(tipo)
+    _log(f"Verificando: {tipo.upper()}  ·  Ambiente: {ambiente.upper()}  ·  Tabla: {tabla or '(desconocida)'}")
+    if not tabla:
+        _log(f"ERROR: no hay tabla configurada para {tipo}/{ambiente}")
+        return {"existe": False, "log": log}
+
+    if not archivo or not Path(archivo).exists():
+        _log(f"ERROR: no se encontró el archivo {tipo.upper()} para verificar")
+        return {"existe": False, "log": log}
+
+    archivo = Path(archivo)
+    try:
+        item = json.loads(archivo.read_text(encoding="utf-8"), parse_float=Decimal)
+    except Exception as e:
+        _log(f"ERROR: el JSON de {archivo.name} no es válido: {e}")
+        return {"existe": False, "log": log}
+
+    try:
+        import boto3
+        import urllib3
+        from botocore.exceptions import ClientError, NoCredentialsError, EndpointConnectionError
+        urllib3.disable_warnings()
+    except ImportError:
+        _log("ERROR: falta instalar boto3 (pip install boto3)")
+        return {"existe": False, "log": log}
+
+    if not AWS_CRED_FILE:
+        _log("ERROR: no hay AWS_CRED_FILE configurado en .env")
+        return {"existe": False, "log": log}
+
+    try:
+        creds = cargar_credenciales_aws(Path(AWS_CRED_FILE))
+        session = boto3.Session(**creds)
+        dynamodb = session.resource("dynamodb", verify=False)
+        tabla_ref = dynamodb.Table(tabla)
+        pk_name = tabla_ref.key_schema[0]["AttributeName"]
+        pk_valor = item.get(pk_name)
+        if pk_valor is None:
+            _log(f"ERROR: el archivo no tiene la partition key '{pk_name}'")
+            return {"existe": False, "log": log}
+        leido = tabla_ref.get_item(Key={pk_name: pk_valor}).get("Item")
+        if leido:
+            _log(f"Encontrado en {tabla} ({pk_name}='{pk_valor}') — ya está desplegado ahí")
+            return {"existe": True, "tabla": tabla, "log": log}
+        _log(f"No se encontró en {tabla} ({pk_name}='{pk_valor}')")
+        return {"existe": False, "tabla": tabla, "log": log}
+    except NoCredentialsError:
+        _log("ERROR: no hay credenciales AWS configuradas")
+    except EndpointConnectionError as e:
+        _log(f"ERROR: no se pudo conectar a AWS (¿estás en la red del banco?): {e}")
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "Unknown")
+        msg = e.response.get("Error", {}).get("Message", str(e))
+        _log(f"ERROR de AWS ({code}): {msg}")
+    except Exception as e:
+        _log(f"ERROR verificando: {e}")
+    return {"existe": False, "log": log}

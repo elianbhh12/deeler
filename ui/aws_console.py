@@ -18,7 +18,7 @@ import streamlit as st
 
 from core.config import ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, MI_CLOUD, MI_INFO, MI_REFRESH, MI_SETTINGS, MI_OK, MI_ERROR, MI_SEARCH, AWS_TABLAS, AWS_CRED_FILE, ROOT_FOLDER
 from core.analysis import _val_ok, analizar_hu, clasificar_udz_desde_json, detectar_ambiente, detectar_slots_udz, normalizar_s3, obtener_estado_pdn_real
-from core.aws_upload import subir_componente
+from core.aws_upload import subir_componente, verificar_en_tabla
 from core.utils import obtener_usuario_actual, safe_name
 
 #  Nombres para mostrar según el tipo de UDZ detectado.
@@ -446,10 +446,22 @@ def _persistir_subida_aws(r: dict, tipo: str, ambiente: str, tabla: str, resulta
     if not hu_folder_str:
         return
 
+    _usuario = obtener_usuario_actual()
+    _ahora = datetime.now().isoformat()
+
+    # "Última actividad" de este componente, sin importar el ambiente — para
+    # el chip de "última subida" de la tarjeta.
     r[f"{tipo}_aws_ambiente"] = ambiente
-    r[f"{tipo}_aws_por"] = obtener_usuario_actual()
-    r[f"{tipo}_aws_en"] = datetime.now().isoformat()
+    r[f"{tipo}_aws_por"] = _usuario
+    r[f"{tipo}_aws_en"] = _ahora
     r[f"{tipo}_aws_tabla"] = tabla
+
+    # Registro específico por ambiente — no se pisa entre QA y PDN, así subir
+    # este componente a QA después de subirlo a PDN no borra el estado de
+    # "ya desplegado en PDN" (ver core.analysis.obtener_estado_pdn_real).
+    r[f"{tipo}_aws_{ambiente}_por"] = _usuario
+    r[f"{tipo}_aws_{ambiente}_en"] = _ahora
+    r[f"{tipo}_aws_{ambiente}_tabla"] = tabla
 
     out_path = Path(hu_folder_str) / "analisis" / "analisis_tecnico.json"
     out_path.write_text(json.dumps(r, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -460,6 +472,117 @@ def _persistir_subida_aws(r: dict, tipo: str, ambiente: str, tabla: str, resulta
             break
     st.session_state["resultados"] = resultados
     st.session_state["_excel_pending"] = True
+
+
+def _persistir_verificacion_pdn(r: dict, tipo: str, tabla: str, resultados: list,
+                                 nota: str = "verificado en AWS", fecha: str = None):
+    """Confirma en analisis_tecnico.json que este componente ya está en PDN,
+    sin haberlo vuelto a subir — para recuperar HU cuyo registro de PDN se
+    perdió (ej. se pisó al subir el mismo componente a QA antes de este fix).
+    No toca los campos "última actividad", porque esto no es una subida real.
+    `nota` distingue si se confirmó con un get_item real contra AWS o a mano
+    (cuando no hay a mano un rol con acceso de lectura a PDN). `fecha`
+    permite anotar cuándo se subió realmente (confirmación manual), en vez
+    de dejar la fecha de hoy como si recién se hubiera subido."""
+    hu_folder_str = r.get("hu_folder")
+    if not hu_folder_str:
+        return
+
+    r[f"{tipo}_aws_pdn_por"] = f"{obtener_usuario_actual()} ({nota})"
+    r[f"{tipo}_aws_pdn_en"] = fecha or datetime.now().isoformat()
+    r[f"{tipo}_aws_pdn_tabla"] = tabla
+
+    out_path = Path(hu_folder_str) / "analisis" / "analisis_tecnico.json"
+    out_path.write_text(json.dumps(r, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    for i, x in enumerate(resultados):
+        if str(x.get("hu_id")) == str(r.get("hu_id")):
+            resultados[i] = r
+            break
+    st.session_state["resultados"] = resultados
+    st.session_state["_excel_pending"] = True
+
+
+def _componentes_pdn_pendientes(r: dict) -> list:
+    """Componentes con archivo presente que todavía no tienen su registro de
+    PDN confirmado — lo que falta para poder marcar la HU entera como
+    desplegada en PDN (ver obtener_estado_pdn_real)."""
+    pendientes = []
+    if r.get("ta_activo") and not r.get("ta_aws_pdn_por"):
+        pendientes.append({"clave": "ta", "tipo_tabla": "ta", "archivo": r.get("ta_activo"), "label": "TA"})
+    if r.get("aid_activo") and not r.get("aid_aws_pdn_por"):
+        pendientes.append({"clave": "aid", "tipo_tabla": "aid", "archivo": r.get("aid_activo"), "label": "AID"})
+    slots = detectar_slots_udz(r)
+    for s in slots:
+        if not s["archivo"]:
+            continue
+        clave = f"udz_{s['tipo'].lower()}" if (s["tipo"] and len(slots) > 1) else "udz"
+        if not r.get(f"{clave}_aws_pdn_por"):
+            _sub = f" ({s['tipo']})" if s["tipo"] else ""
+            pendientes.append({"clave": clave, "tipo_tabla": "udz", "archivo": s["archivo"], "label": f"UDZ{_sub}"})
+    return pendientes
+
+
+def render_recuperacion_pdn(r: dict, resultados: list):
+    """Atajo a nivel HU (no componente por componente) para recuperar o
+    confirmar el estado de "desplegado en PDN" cuando se perdió — ej. se
+    pisó al subir el mismo componente a QA después (antes de separar el
+    registro por ambiente). Pensado para mostrarse arriba, junto al estado
+    de la HU en hu_detail.py, no acá abajo en la consola por componente."""
+    if obtener_estado_pdn_real(r)["desplegado"]:
+        return
+    pendientes = _componentes_pdn_pendientes(r)
+    if not pendientes:
+        return
+
+    _hu_id = r.get("hu_id")
+    with st.expander(f"¿Esta HU ya estaba en PDN? Verificar/confirmar ({len(pendientes)} componente(s))", icon=MI_SEARCH):
+        st.caption("Revisa todos los componentes de esta HU de una — sin ir uno por uno en 'Subir a AWS' más abajo.")
+
+        if st.button(f"Verificar los {len(pendientes)} en AWS", key=f"hu_verificar_pdn_{_hu_id}",
+                     width='stretch', icon=MI_SEARCH,
+                     help="Chequea cada componente contra la tabla de PDN, sin volver a subirlo — necesita credenciales con lectura a esa tabla"):
+            _encontrados, _no_encontrados = [], []
+            for comp in pendientes:
+                with st.spinner(f"Verificando {comp['label']} en PDN..."):
+                    resultado_verif = verificar_en_tabla(comp["tipo_tabla"], Path(comp["archivo"]), ambiente="pdn")
+                _agregar_al_log(f"{comp['label']} (verificación PDN)", "pdn", resultado_verif)
+                if resultado_verif.get("existe"):
+                    _persistir_verificacion_pdn(r, comp["clave"], resultado_verif.get("tabla"), resultados)
+                    _encontrados.append(comp["label"])
+                else:
+                    _no_encontrados.append(comp["label"])
+            if _encontrados:
+                st.toast(f"Confirmados en PDN: {', '.join(_encontrados)}", icon=MI_OK)
+            if _no_encontrados:
+                st.toast(f"No se encontraron en PDN: {', '.join(_no_encontrados)}", icon=MI_WARNING)
+            st.rerun()
+
+        st.divider()
+        st.caption(f"{ICON_WARNING} O si no tenés un rol con acceso a PDN ahora, confirmalo a mano (queda registrado como confirmación manual, no automática):")
+        _motivo_manual = st.text_input(
+            "¿Cómo sabés que ya está en PDN?", key=f"hu_manual_pdn_motivo_{_hu_id}",
+            placeholder="ej. lo subí yo la semana pasada, lo vi en la consola de AWS...",
+        )
+        _fecha_manual = st.date_input(
+            "Fecha real en que se subió a PDN (si no la sabés, dejá hoy)",
+            value=datetime.now().date(), key=f"hu_manual_pdn_fecha_{_hu_id}",
+        )
+        if st.button(
+            f"Confirmar a mano los {len(pendientes)} componente(s) como ya desplegados en PDN",
+            key=f"hu_manual_pdn_{_hu_id}", width='stretch',
+            disabled=not _motivo_manual.strip(),
+            help=None if _motivo_manual.strip() else "Contá brevemente cómo lo sabés, para que quede en el registro",
+        ):
+            _en_manual = datetime.combine(_fecha_manual, datetime.now().time()).isoformat()
+            for comp in pendientes:
+                _tabla_pdn = AWS_TABLAS.get("pdn", {}).get(comp["tipo_tabla"], "")
+                _persistir_verificacion_pdn(
+                    r, comp["clave"], _tabla_pdn, resultados,
+                    nota=f"confirmado a mano: {_motivo_manual.strip()}", fecha=_en_manual,
+                )
+            st.toast(f"{len(pendientes)} componente(s) confirmados a mano en PDN", icon=MI_OK)
+            st.rerun()
 
 
 def _render_panel_credenciales():
