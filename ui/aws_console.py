@@ -39,8 +39,8 @@ CRITERIOS_ACEPTACION = {
     "aid": (
         ["aid_tecnologia", "aid_type_topic", "out_zone_copiar", "last_step",
          "s3_path", "workflow_vs_id", "ambiente_workflow_id", "coherencia"],
-        "tecnologia='AID' · TYPE válido por step · out_zone/copiarResultadoBucket "
-        "coherentes · LAST_STEP en False · s3_path y workflow_name coherentes con UDZ",
+        "tecnologia='AID' · TYPE válido por step · copiarResultadoBucket=true "
+        "· LAST_STEP en False · s3_path y workflow_name coherentes con UDZ",
     ),
     "udz": (
         ["udz_transmisiones", "s3_path", "workflow_vs_id", "ambiente_workflow_id"],

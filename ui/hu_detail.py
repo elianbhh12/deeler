@@ -624,6 +624,22 @@ def render_hu_detail(resultados, sprint_activo):
         n_ok  = sum(1 for k in VALIDATION_KEYS if not val.get(k, {}).get("na", False) and _val_ok(val.get(k, {})))
         n_err = len(VALIDATION_KEYS) - n_na - n_ok
 
+        # Mismos 4 grupos que se muestran más abajo (val_group) — se cuentan
+        # acá los errores por grupo para el badge de cada encabezado y el
+        # acceso rápido "IR DIRECTO A", así el usuario ve de entrada dónde
+        # está el problema sin tener que scrollear las 12 tarjetas.
+        _GRUPOS_VALIDACION = [
+            ("val-grupo-ta", "TA", ["ta_cu_name", "ta_type_prompts", "kafka"]),
+            ("val-grupo-aid", "AID", ["aid_tecnologia", "aid_type_topic", "last_step", "out_zone_copiar"]),
+            ("val-grupo-udz", "UDZ", ["udz_transmisiones"]),
+            ("val-grupo-cruzadas", "Cruzadas", ["s3_path", "workflow_vs_id", "coherencia", "ambiente_workflow_id"]),
+        ]
+        _tallies_grupo = {}
+        for _anchor, _nombre_corto, _keys_grupo in _GRUPOS_VALIDACION:
+            _g_na = sum(1 for k in _keys_grupo if val.get(k, {}).get("na", False))
+            _g_ok = sum(1 for k in _keys_grupo if not val.get(k, {}).get("na", False) and _val_ok(val.get(k, {})))
+            _tallies_grupo[_anchor] = {"nombre": _nombre_corto, "err": len(_keys_grupo) - _g_na - _g_ok}
+
         _parts = []
         if n_ok:  _parts.append(f"{ICON_OK} {n_ok} correctas")
         if n_err: _parts.append(f"{ICON_ERROR} {n_err} con error")
@@ -681,9 +697,40 @@ def render_hu_detail(resultados, sprint_activo):
             </div>
             """, unsafe_allow_html=True)
 
-            def val_group(nombre):
-                """Encabezado de grupo: agrupa las tarjetas por dónde hay que mirar (TA/AID/UDZ/cruzadas)."""
-                st.markdown(f"<div class='val-group-title'>{nombre}</div>", unsafe_allow_html=True)
+            if n_err > 0:
+                _chips_nav = []
+                for _anchor_id, _info in _tallies_grupo.items():
+                    if _info["err"] > 0:
+                        _chips_nav.append(
+                            f'<a href="#{_anchor_id}" style="text-decoration:none;display:inline-flex;align-items:center;gap:5px;'
+                            f'background:#FEE2E2;color:#991B1B;border:1px solid #FCA5A5;border-radius:999px;'
+                            f'padding:4px 12px;font-size:12px;font-weight:700">{ICON_ERROR} {_info["nombre"]} · {_info["err"]}</a>'
+                        )
+                    else:
+                        _chips_nav.append(
+                            f'<span style="display:inline-flex;align-items:center;gap:5px;'
+                            f'background:#F5F5F4;color:#78716C;border:1px solid #E7E5E4;border-radius:999px;'
+                            f'padding:4px 12px;font-size:12px;font-weight:600">{ICON_OK} {_info["nombre"]}</span>'
+                        )
+                st.markdown(
+                    "<div style='margin-bottom:16px'>"
+                    "<div style='font-size:11px;font-weight:700;color:#78716C;margin-bottom:6px'>IR DIRECTO A:</div>"
+                    "<div style='display:flex;gap:8px;flex-wrap:wrap'>" + "".join(_chips_nav) + "</div>"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+
+            def val_group(nombre, anchor=None, n_err_grupo=0):
+                """Encabezado de grupo: agrupa las tarjetas por dónde hay que mirar
+                (TA/AID/UDZ/cruzadas). Con errores en el grupo, suma un badge y un
+                ancla para que el "IR DIRECTO A" de arriba pueda saltar acá."""
+                _id_attr = f' id="{anchor}"' if anchor else ""
+                _badge = (
+                    f'<span style="background:#FEE2E2;color:#991B1B;border-radius:999px;padding:1px 9px;'
+                    f'font-size:10.5px;font-weight:800">{n_err_grupo} con error</span>'
+                    if n_err_grupo > 0 else ""
+                )
+                st.markdown(f"<div class='val-group-title'{_id_attr}>{nombre}{_badge}</div>", unsafe_allow_html=True)
 
             def val_card(estado, titulo, archivo, regla, detalle_fn, na=False, campo=None, valor_ok=None):
                 if na:
@@ -709,10 +756,14 @@ def render_hu_detail(resultados, sprint_activo):
                 </div>
                 """, unsafe_allow_html=True)
                 if not estado and not na:
-                    detalle_fn()
+                    # Recuadro propio para la explicación del error — separado
+                    # visualmente de la tarjeta, para que se lea como "por qué
+                    # falló y cómo arreglarlo" en vez de mezclarse con el resto.
+                    with st.container(border=True):
+                        detalle_fn()
 
             #  Grupo TA
-            val_group("TA — Text Analyzer (extracción)")
+            val_group("TA — Text Analyzer (extracción)", anchor="val-grupo-ta", n_err_grupo=_tallies_grupo["val-grupo-ta"]["err"])
 
             ta_cu_val = ta_cu_info.get("cu_name", "")
             def _ta_cu_detail():
@@ -762,7 +813,7 @@ def render_hu_detail(resultados, sprint_activo):
                      na=kf_na, campo="TA...kafka_output_topic", valor_ok=topic)
 
             #  Grupo AID
-            val_group("AID — configuración")
+            val_group("AID — configuración", anchor="val-grupo-aid", n_err_grupo=_tallies_grupo["val-grupo-aid"]["err"])
 
             aid_tec_val = aid_tec_info.get("tecnologia", "")
             def _aid_tec_detail():
@@ -808,33 +859,25 @@ def render_hu_detail(resultados, sprint_activo):
                      "Todos los pasos del workflow deben cerrar con LAST_STEP=False", _ls_detail,
                      na=ls_na, campo="AID...LAST_STEP", valor_ok=(", ".join(ls_vals) if ls_vals else None))
 
-            oz_vals     = oz_info.get("out_zones", [])
             copiar_vals = oz_info.get("copiar_vals", [])
-            conflictos = oz_info.get("conflictos", [])
             def _oz_detail():
-                st.markdown("**Configuración encontrada en AID:**")
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown("**copiarResultadoBucket**")
-                    st.code(", ".join(copiar_vals) if copiar_vals else "(no encontrado)", language="text")
-                with c2:
-                    st.markdown("**out_zone**")
-                    st.code(", ".join(oz_vals) if oz_vals else "(no encontrado)", language="text")
-                st.markdown("**Regla:** Si existe `out_zone`, debe estar acompañado de `copiarResultadoBucket=true` (y no ambos juntos)")
-                if oz_vals and not copiar_vals:
-                    st.error(f"{ICON_ERROR} **Conflicto:** out_zone existe pero falta copiarResultadoBucket=true")
-                elif conflictos:
-                    st.error(f"{ICON_ERROR} **Conflicto:** {conflictos[0]}")
-                elif copiar_vals and any(str(v).lower() != "true" for v in copiar_vals):
-                    st.error(f"{ICON_ERROR} **copiarResultadoBucket no es true**")
-            val_card(oz_ok, "out_zone & copiarResultadoBucket", _f_aid,
-                     "Validar configuración de copia de resultados en AID", _oz_detail, na=oz_na,
-                     campo="AID...STEP_VARIABLES.{out_zone, copiarResultadoBucket}")
+                st.markdown("**copiarResultadoBucket encontrado en AID:**")
+                st.code(", ".join(copiar_vals) if copiar_vals else "(no encontrado)", language="text")
+                st.markdown("**Regla:** `copiarResultadoBucket` siempre debe ser `true` (out_zone no forma parte de la regla)")
+                if not copiar_vals:
+                    st.error(f"{ICON_ERROR} **copiarResultadoBucket no encontrado**")
+                    st.info('**Agregar en AID** → dentro de STEP_VARIABLES:\n```json\n"copiarResultadoBucket": "true"\n```')
+                else:
+                    st.error(f"{ICON_ERROR} **copiarResultadoBucket no es true en {sum(1 for v in copiar_vals if str(v).lower() != 'true')} de {len(copiar_vals)} ocurrencia(s)**")
+                    st.info('**Cambiar en AID** → `Ctrl+F: copiarResultadoBucket`\n```json\n"copiarResultadoBucket": "true"\n```')
+            val_card(oz_ok, "copiarResultadoBucket = true", _f_aid,
+                     "copiarResultadoBucket siempre debe ser true cuando hay un step call_api con STEP_VARIABLES", _oz_detail, na=oz_na,
+                     campo="AID...STEP_VARIABLES.copiarResultadoBucket", valor_ok=(copiar_vals[0] if copiar_vals else None))
 
             #  Grupo UDZ
-            val_group("UDZ — eventos")
+            val_group("UDZ — eventos", anchor="val-grupo-udz", n_err_grupo=_tallies_grupo["val-grupo-udz"]["err"])
 
-            tx_tipo = udz_tx_info.get("udz_tipo", "NO_DEFINIDO")
+            tx_tipo = udz_tx_info.get("udz_tipo", "DESCONOCIDO")
             def _udz_tx_detail():
                 st.markdown("### UDZ detectados en esta HU:")
                 udz_files_list = [Path(p) for p in r.get("udz_files", [])]
@@ -873,10 +916,10 @@ def render_hu_detail(resultados, sprint_activo):
             val_card(udz_tx_ok, "Reglas de transmisión (crudos/resultados)", _f_udz,
                      "UDZ debe cumplir las reglas específicas según sea CRUDOS o RESULTADOS", _udz_tx_detail,
                      na=udz_tx_na, campo="UDZ.item.{require_transmission, emit_event, s3_path}",
-                     valor_ok=(tx_tipo if tx_tipo != "NO_DEFINIDO" else None))
+                     valor_ok=(tx_tipo if tx_tipo != "DESCONOCIDO" else None))
 
             #  Grupo cruzadas: TA <-> AID <-> UDZ
-            val_group("Cruzadas — TA ↔ AID ↔ UDZ")
+            val_group("Cruzadas — TA ↔ AID ↔ UDZ", anchor="val-grupo-cruzadas", n_err_grupo=_tallies_grupo["val-grupo-cruzadas"]["err"])
 
             aid_path = s3_info.get("aid", "")
             udz_path = s3_info.get("udz", "")

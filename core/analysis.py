@@ -395,18 +395,32 @@ def _validar_udz_cruzadas(aid: dict, wf: str, aid_s3: str, udz: dict, es_desplie
     udz_tx_na = not bool(udz)
     require_true = str(udz_require_transmission).strip().lower() == "true"
     emit_false = str(udz_emit_event).strip().lower() == "false"
-    s3_has_resultados = "resultados" in str(udz_s3).lower()
-    s3_has_crudos = "crudos" in str(udz_s3).lower()
-    udz_tipo = "RESULTADOS" if require_true else ("CRUDOS" if s3_has_crudos else "NO_DEFINIDO")
+    emit_true = str(udz_emit_event).strip().lower() == "true"
+    # Misma clasificación que el resto de las validaciones cruzadas (línea de
+    # arriba, _udz_tipo_s3) — antes esta validación usaba su propio criterio
+    # (solo require_transmission=="true"), así que un UDZ de RESULTADOS por
+    # s3_path pero con require_transmission="false" (mal configurado) quedaba
+    # sin validar (pasaba como "NO_DEFINIDO" -> ok=True) en vez de dar error.
+    udz_tipo = _udz_tipo_s3
     if udz:
-        udz_tx_ok = (emit_false and s3_has_resultados) if require_true else True
+        if udz_tipo == "RESULTADOS":
+            udz_tx_ok = require_true and emit_false
+        elif udz_tipo == "CRUDOS":
+            udz_tx_ok = (not require_true) and emit_true
+        else:
+            # No se pudo clasificar ni por s3_path ni por require_transmission.
+            udz_tx_ok = not es_despliegue
     else:
         udz_tx_ok = not es_despliegue
     val_udz_transmisiones = {
         "ok": udz_tx_ok, "na": udz_tx_na and not es_despliegue,
         "udz_tipo": udz_tipo, "require_transmission": udz_require_transmission,
         "emit_event": udz_emit_event, "s3_path": udz_s3,
-        "detalle": f"{ICON_OK} UDZ consistente con regla crudos/resultados" if udz_tx_ok else f"{ICON_ERROR} Si require_transmission=true: emit_event=false y s3_path debe contener 'resultados'",
+        "detalle": (
+            f"{ICON_OK} UDZ consistente con regla crudos/resultados" if udz_tx_ok
+            else f"{ICON_ERROR} RESULTADOS exige require_transmission=true y emit_event=false · "
+                 f"CRUDOS exige require_transmission=false y emit_event=true"
+        ),
     }
 
     return {
@@ -720,31 +734,14 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
 
         validar_step_vars(aid)
 
-    # Reglas:
-    # 1. Si copiarResultadoBucket=True y existe out_zone → ERROR (conflicto)
-    # 2. Si existe out_zone pero NO existe copiarResultadoBucket → ERROR (falta setear copiar=True y quitar out_zone)
-    # 3. Si no hay AID (MODIFICACIÓN sin AID) → N/A
-    # 4. Si no hay call_api con STEP_VARIABLES → N/A (no aplica)
+    # Regla: copiarResultadoBucket siempre debe ser true (cuando aplica).
+    # out_zone no forma parte de la regla — no hace falta que esté, y su
+    # presencia tampoco es un conflicto ni se valida.
     if aid and tiene_call_api_con_step_vars:
-        tiene_out_zone  = len(out_zones) > 0
         tiene_copiar    = len(copiar_vals) > 0
         copiar_es_true  = all(str(v).lower() == "true" for v in copiar_vals) if copiar_vals else False
-
-        if tiene_out_zone and not tiene_copiar:
-            # out_zone existe pero falta copiarResultadoBucket=True → error
-            out_zone_ok = False
-            copiar_ok   = False
-        elif conflictos:
-            # copiarResultadoBucket=True y out_zone coexisten → error
-            out_zone_ok = False
-            copiar_ok   = True
-        elif tiene_copiar and not copiar_es_true:
-            # copiarResultadoBucket existe pero no es True → error
-            out_zone_ok = True
-            copiar_ok   = False
-        else:
-            out_zone_ok = True
-            copiar_ok   = True
+        out_zone_ok = True
+        copiar_ok   = tiene_copiar and copiar_es_true
     else:
         # Sin AID, sin call_api+STEP_VARIABLES, o MODIFICACIÓN → N/A, no bloquear
         out_zone_ok = not es_despliegue
@@ -759,7 +756,7 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
         "na": oz_na,
         "out_zone_ok": out_zone_ok or oz_na,
         "copiar_ok": copiar_ok or oz_na,
-        "detalle": f"{ICON_NA} No aplica (sin call_api+STEP_VARIABLES)" if oz_na else (f"{ICON_OK} Configuración correcta" if (out_zone_ok and copiar_ok) else f"{ICON_ERROR} Configuración incorrecta")
+        "detalle": f"{ICON_NA} No aplica (sin call_api+STEP_VARIABLES)" if oz_na else (f"{ICON_OK} copiarResultadoBucket=true" if copiar_ok else f"{ICON_ERROR} copiarResultadoBucket debe ser true")
     }
 
     # Estado general — todas las validaciones críticas que NO son N/A deben estar ok

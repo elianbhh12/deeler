@@ -114,7 +114,11 @@ def _escribir_hu_minima(base: Path, ta: dict, aid: dict, udz: dict, tipo_cambio:
 def test_out_zone_sin_copiar_bucket_bloquea_el_estado(appmod, tmp_path):
     """Regresión del bug donde out_zone_copiar nunca podía marcar ERROR: la clave
     'ok' que leía el agregador de criticos no existía en ese dict (solo existían
-    out_zone_ok/copiar_ok), así que .get('ok', True) siempre devolvía True."""
+    out_zone_ok/copiar_ok), así que .get('ok', True) siempre devolvía True.
+
+    La regla real es solo copiarResultadoBucket=true — out_zone no forma
+    parte de ella (ni bloquea ni hace falta), así que este caso (falta
+    copiarResultadoBucket) sigue dando error igual con o sin out_zone."""
     ta = {
         "cu_name": "caso_test", "type": "prompts",
         "kafka_output_topic": "documentreceivingmanagement.documentuploadedv1",
@@ -126,7 +130,7 @@ def test_out_zone_sin_copiar_bucket_bloquea_el_estado(appmod, tmp_path):
         "workflow_definition": [{
             "STEP_NAME": "step1", "FUNCTION_NAME": "call_api", "LAST_STEP": "False",
             "STEP_VARIABLES": {"JOB_NAME": "job1", "out_zone": "s3://bucket-pdn-test/out/"},
-            # out_zone presente pero SIN copiarResultadoBucket -> debe ser error
+            # falta copiarResultadoBucket -> debe ser error
         }],
     }
     udz = {"item": {
@@ -137,10 +141,42 @@ def test_out_zone_sin_copiar_bucket_bloquea_el_estado(appmod, tmp_path):
 
     r = appmod.analizar_hu(hu_folder)
 
-    assert r["validaciones"]["out_zone_copiar"]["out_zone_ok"] is False
+    assert r["validaciones"]["out_zone_copiar"]["copiar_ok"] is False
     assert r["estado_code"] == appmod.ESTADO_ERROR, (
-        "out_zone sin copiarResultadoBucket=True debe bloquear el estado LISTO"
+        "falta de copiarResultadoBucket=True debe bloquear el estado LISTO"
     )
+
+
+def test_out_zone_junto_con_copiar_bucket_true_ya_no_es_error(appmod, tmp_path):
+    """out_zone no es parte de la regla: que aparezca junto con
+    copiarResultadoBucket=true no debe dar error (antes se trataba como
+    conflicto)."""
+    ta = {
+        "cu_name": "caso_test2", "type": "prompts",
+        "kafka_output_topic": "documentreceivingmanagement.documentuploadedv1",
+    }
+    aid = {
+        "workflow_name": "aid-pdn-test2", "s3_path": "s3://bucket-pdn-test2/resultados",
+        "use_case": "caso_test2", "TYPE": "topic",
+        "workflow_variables": {"tecnologia": "AID"},
+        "workflow_definition": [{
+            "STEP_NAME": "step1", "FUNCTION_NAME": "call_api", "LAST_STEP": "False",
+            "STEP_VARIABLES": {
+                "JOB_NAME": "job1", "out_zone": "s3://bucket-pdn-test2/out/",
+                "copiarResultadoBucket": "true",
+            },
+        }],
+    }
+    udz = {"item": {
+        "id": "aid-pdn-test2", "s3_path": "s3://bucket-pdn-test2/resultados",
+        "require_transmission": "true", "emit_event": "false",
+    }}
+    hu_folder = _escribir_hu_minima(tmp_path, ta, aid, udz, "DESPLIEGUE")
+
+    r = appmod.analizar_hu(hu_folder)
+
+    assert r["validaciones"]["out_zone_copiar"]["copiar_ok"] is True
+    assert r["estado_code"] == appmod.ESTADO_LISTO
 
 
 #  Regresión: kafka_output_topic y TYPE deben validar TODAS las ocurrencias, no solo la primera
@@ -457,3 +493,56 @@ def test_obtener_estado_pdn_real_qa_sin_pdn_previo_no_desplegado(appmod):
     }
     estado = appmod.obtener_estado_pdn_real(r)
     assert estado["desplegado"] is False
+
+
+#  Regresión: udz_transmisiones no validaba nada real cuando require_transmission
+#  no era literalmente "true" — un UDZ de RESULTADOS (por s3_path) mal configurado
+#  con require_transmission=false pasaba como "NO_DEFINIDO" -> ok=True sin alertar,
+#  y un CRUDOS con emit_event mal puesto tampoco se detectaba.
+
+def _hu_udz_transmisiones(tmp_path: Path, udz_extra: dict) -> dict:
+    ta = {
+        "cu_name": "caso_tx", "type": "prompts",
+        "kafka_output_topic": "documentreceivingmanagement.documentuploadedv1",
+    }
+    aid = {
+        "workflow_name": "aid-pdn-tx", "s3_path": "s3://bucket-pdn-tx/crudos/algo",
+        "use_case": "caso_tx", "TYPE": "topic",
+        "workflow_variables": {"tecnologia": "AID"},
+        "workflow_definition": [{"STEP_NAME": "step1", "TYPE": "topic", "LAST_STEP": "False"}],
+    }
+    udz = {"item": {"id": "aid-pdn-tx", **udz_extra}}
+    hu_folder = _escribir_hu_minima(tmp_path, ta, aid, udz, "DESPLIEGUE")
+    return analysis.analizar_hu(hu_folder)
+
+
+def test_udz_resultados_por_s3_path_con_require_transmission_false_da_error(appmod, tmp_path):
+    """UDZ clasificado RESULTADOS por su s3_path, pero con require_transmission
+    en false (mal configurado) — antes esto quedaba como 'NO_DEFINIDO' y pasaba
+    en silencio; ahora debe marcar error."""
+    r = _hu_udz_transmisiones(tmp_path, {
+        "s3_path": "s3://bucket-pdn-tx/resultados/algo",
+        "require_transmission": "false", "emit_event": "true",
+    })
+    assert r["validaciones"]["udz_transmisiones"]["udz_tipo"] == "RESULTADOS"
+    assert r["validaciones"]["udz_transmisiones"]["ok"] is False
+
+
+def test_udz_crudos_con_emit_event_mal_puesto_da_error(appmod, tmp_path):
+    """UDZ clasificado CRUDOS por su s3_path, pero con emit_event=false (debería
+    ser true) — antes esto pasaba sin validar nada; ahora debe marcar error."""
+    r = _hu_udz_transmisiones(tmp_path, {
+        "s3_path": "s3://bucket-pdn-tx/crudos/algo",
+        "require_transmission": "false", "emit_event": "false",
+    })
+    assert r["validaciones"]["udz_transmisiones"]["udz_tipo"] == "CRUDOS"
+    assert r["validaciones"]["udz_transmisiones"]["ok"] is False
+
+
+def test_udz_crudos_bien_configurado_sigue_dando_ok(appmod, tmp_path):
+    r = _hu_udz_transmisiones(tmp_path, {
+        "s3_path": "s3://bucket-pdn-tx/crudos/algo",
+        "require_transmission": "false", "emit_event": "true",
+    })
+    assert r["validaciones"]["udz_transmisiones"]["udz_tipo"] == "CRUDOS"
+    assert r["validaciones"]["udz_transmisiones"]["ok"] is True

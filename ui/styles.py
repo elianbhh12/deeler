@@ -769,12 +769,12 @@ section[data-testid="stSidebar"] .stInfo {{
 
 /* Encabezado de grupo (TA / AID / UDZ / Cruzadas) dentro de Validaciones críticas */
 .val-group-title {{
- font-size: 11px;
+ font-size: 14.5px;
  font-weight: 800;
- letter-spacing: .06em;
+ letter-spacing: .03em;
  text-transform: uppercase;
- color: var(--muted);
- margin: 18px 0 8px 2px;
+ color: var(--ink);
+ margin: 20px 0 10px 2px;
  display: flex;
  align-items: center;
  gap: 8px;
