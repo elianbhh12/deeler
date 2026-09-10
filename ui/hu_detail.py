@@ -624,6 +624,22 @@ def render_hu_detail(resultados, sprint_activo):
         n_ok  = sum(1 for k in VALIDATION_KEYS if not val.get(k, {}).get("na", False) and _val_ok(val.get(k, {})))
         n_err = len(VALIDATION_KEYS) - n_na - n_ok
 
+        # Si el UDZ viene separado en Crudos+Resultados, el archivo NO activo
+        # también cuenta para el estado general (ver core.analysis.analizar_hu)
+        # — hay que sumarlo acá también, si no el resumen/los badges dicen
+        # "todo OK" mientras arriba el estado general ya dice "CON ERRORES".
+        _extra_validaciones = r.get("validaciones_udz_extra") or {}
+        _claves_cruzadas_extra = ("s3_path", "workflow_vs_id", "ambiente_workflow_id", "udz_transmisiones")
+        for _val_extra_hu in _extra_validaciones.values():
+            for _k_extra in _claves_cruzadas_extra:
+                _v_extra = _val_extra_hu.get(_k_extra, {})
+                if _v_extra.get("na", False):
+                    continue
+                if _val_ok(_v_extra):
+                    n_ok += 1
+                else:
+                    n_err += 1
+
         # Mismos 4 grupos que se muestran más abajo (val_group) — se cuentan
         # acá los errores por grupo para el badge de cada encabezado y el
         # acceso rápido "IR DIRECTO A", así el usuario ve de entrada dónde
@@ -639,6 +655,17 @@ def render_hu_detail(resultados, sprint_activo):
             _g_na = sum(1 for k in _keys_grupo if val.get(k, {}).get("na", False))
             _g_ok = sum(1 for k in _keys_grupo if not val.get(k, {}).get("na", False) and _val_ok(val.get(k, {})))
             _tallies_grupo[_anchor] = {"nombre": _nombre_corto, "err": len(_keys_grupo) - _g_na - _g_ok}
+
+        # Los errores del UDZ no activo se suman al badge del grupo que
+        # corresponda (UDZ para udz_transmisiones, Cruzadas para el resto).
+        for _val_extra_hu in _extra_validaciones.values():
+            _tx_extra_tally = _val_extra_hu.get("udz_transmisiones", {})
+            if not _tx_extra_tally.get("na", False) and not _val_ok(_tx_extra_tally):
+                _tallies_grupo["val-grupo-udz"]["err"] += 1
+            for _k_extra in ("s3_path", "workflow_vs_id", "ambiente_workflow_id"):
+                _v_extra_tally = _val_extra_hu.get(_k_extra, {})
+                if not _v_extra_tally.get("na", False) and not _val_ok(_v_extra_tally):
+                    _tallies_grupo["val-grupo-cruzadas"]["err"] += 1
 
         _parts = []
         if n_ok:  _parts.append(f"{ICON_OK} {n_ok} correctas")
@@ -918,6 +945,33 @@ def render_hu_detail(resultados, sprint_activo):
                      na=udz_tx_na, campo="UDZ.item.{require_transmission, emit_event, s3_path}",
                      valor_ok=(tx_tipo if tx_tipo != "DESCONOCIDO" else None))
 
+            # Si el UDZ viene separado en Crudos+Resultados, el archivo que NO
+            # está activo también se valida acá — sin esto, un error real ahí
+            # (ej. emit_event mal puesto) quedaba invisible mientras el
+            # activo pasara, y había que elegirlo a mano para verlo.
+            for _clave_extra, _val_extra in (r.get("validaciones_udz_extra") or {}).items():
+                _tx_extra = _val_extra.get("udz_transmisiones", {})
+                _tx_extra_ok = _tx_extra.get("ok", False)
+                _tx_extra_na = _tx_extra.get("na", False)
+                _tx_extra_tipo = _tx_extra.get("udz_tipo", "DESCONOCIDO")
+                _nombre_extra = {"udz_crudos": "Crudos", "udz_resultados": "Transmisión (Resultados)"}.get(_clave_extra, _clave_extra)
+
+                def _make_udz_extra_detail(_info):
+                    def _detail():
+                        st.markdown(f"**require_transmission:** `{_info.get('require_transmission', '?')}`  ·  **emit_event:** `{_info.get('emit_event', '?')}`")
+                        st.markdown(f"**s3_path:** `{_info.get('s3_path', '?')}`")
+                        st.markdown("""
+                        **Regla:** RESULTADOS exige `require_transmission=true` + `emit_event=false` ·
+                        CRUDOS exige `require_transmission=false` + `emit_event=true`
+                        """)
+                    return _detail
+
+                val_card(_tx_extra_ok, f"Reglas de transmisión — {_nombre_extra} (no activo)", _f_udz,
+                         "Este archivo UDZ no está seleccionado como activo, pero igual se valida",
+                         _make_udz_extra_detail(_tx_extra), na=_tx_extra_na,
+                         campo="UDZ.item.{require_transmission, emit_event, s3_path}",
+                         valor_ok=(_tx_extra_tipo if _tx_extra_tipo != "DESCONOCIDO" else None))
+
             #  Grupo cruzadas: TA <-> AID <-> UDZ
             val_group("Cruzadas — TA ↔ AID ↔ UDZ", anchor="val-grupo-cruzadas", n_err_grupo=_tallies_grupo.get("val-grupo-cruzadas", {}).get("err", 0))
 
@@ -1007,6 +1061,30 @@ def render_hu_detail(resultados, sprint_activo):
                      "AID y UDZ deben apuntar al mismo ambiente operativo", _amb_wf_detail,
                      na=amb_wf_na, campo="AID.workflow_name ↔ UDZ.item.id",
                      valor_ok=(aid_amb if aid_amb != "DESCONOCIDO" else None))
+
+            # Mismos 3 chequeos cruzados de arriba (s3_path, workflow_vs_id,
+            # ambiente), pero para el UDZ NO activo cuando hay Crudos+
+            # Resultados por separado — también cuentan para el estado
+            # general (ver core.analysis.analizar_hu), así que también
+            # tienen que poder verse acá sin cambiar el selector.
+            _cruzadas_extra_info = [
+                ("s3_path", "S3 Path — AID = UDZ"),
+                ("workflow_vs_id", "workflow_name — AID = UDZ id"),
+                ("ambiente_workflow_id", "Ambiente — workflow_name = id (qa/pdn)"),
+            ]
+            for _clave_extra, _val_extra in _extra_validaciones.items():
+                _nombre_extra = {"udz_crudos": "Crudos", "udz_resultados": "Transmisión (Resultados)"}.get(_clave_extra, _clave_extra)
+                for _k_extra, _titulo_extra in _cruzadas_extra_info:
+                    _v_extra = _val_extra.get(_k_extra, {})
+
+                    def _make_extra_detail(_info):
+                        def _detail():
+                            st.json(_info)
+                        return _detail
+
+                    val_card(_v_extra.get("ok", False), f"{_titulo_extra} — {_nombre_extra} (no activo)",
+                             f"{_f_aid} & {_f_udz}", "Ver detalle abajo", _make_extra_detail(_v_extra),
+                             na=_v_extra.get("na", False))
 
         _arcs_r = r.get("archivos", {})
         _presentes  = [k for k in ("TA", "AID", "UDZ") if ICON_ERROR not in _arcs_r.get(k, ICON_ERROR)]

@@ -560,3 +560,43 @@ def test_udz_no_clasificable_en_despliegue_da_error(appmod, tmp_path):
     })
     assert r["validaciones"]["udz_transmisiones"]["udz_tipo"] == "DESCONOCIDO"
     assert r["validaciones"]["udz_transmisiones"]["ok"] is False
+
+
+#  Regresión: con UDZ separado en Crudos+Resultados, un error en el archivo
+#  NO activo debe bloquear igual el estado general — antes solo el UDZ
+#  activo entraba en el cálculo de LISTO/ERROR, y el otro podía estar mal
+#  configurado (ej. emit_event al revés) sin que nadie lo viera hasta
+#  elegirlo a mano en el selector "UDZ a usar".
+
+def test_udz_no_activo_con_error_bloquea_estado_general(appmod, tmp_path):
+    ta = {
+        "cu_name": "caso_dosudz2", "type": "prompts",
+        "kafka_output_topic": appmod.KAFKA_TOPIC_REQUERIDO,
+    }
+    aid = {
+        "workflow_name": "aid-pdn-dosudz2", "s3_path": "s3://bucket-pdn-dosudz2/crudos/algo",
+        "use_case": "caso_dosudz2", "TYPE": "topic",
+        "workflow_variables": {"tecnologia": "AID"},
+        "workflow_definition": [{"STEP_NAME": "step1", "TYPE": "topic", "LAST_STEP": "False"}],
+    }
+    udz_crudos = {"item": {
+        "id": "aid-pdn-dosudz2", "s3_path": "s3://bucket-pdn-dosudz2/crudos/algo",
+        "require_transmission": "false", "emit_event": "true",
+    }}
+    # RESULTADOS mal configurado a propósito: emit_event debería ser "false".
+    udz_resultados = {"item": {
+        "id": "aid-pdn-dosudz2", "s3_path": "s3://bucket-pdn-dosudz2/resultados/algo",
+        "require_transmission": "true", "emit_event": "true",
+    }}
+    hu_folder = _escribir_hu_dos_udz(tmp_path, ta, aid, udz_crudos, udz_resultados)
+
+    # Se fuerza CRUDOS (bien armado) como activo — el error queda en el otro.
+    _crudos_path = hu_folder / "adjuntos" / "udz_crudos.json"
+    r = appmod.analizar_hu(hu_folder, udz_override=_crudos_path)
+
+    assert r["validaciones"]["udz_transmisiones"]["ok"] is True, "el UDZ activo (crudos) está bien armado"
+    assert "udz_resultados" in r.get("validaciones_udz_extra", {})
+    assert r["validaciones_udz_extra"]["udz_resultados"]["udz_transmisiones"]["ok"] is False
+    assert r["estado_code"] == appmod.ESTADO_ERROR, (
+        "un error en el UDZ no activo (resultados) debe bloquear el estado LISTO igual"
+    )

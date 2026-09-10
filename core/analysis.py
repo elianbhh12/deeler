@@ -765,6 +765,16 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
         for k in VALIDATION_KEYS
         if not resultado["validaciones"].get(k, {}).get("na", False)
     ]
+    # Si el UDZ viene separado en Crudos+Resultados, el archivo que NO está
+    # activo también tiene que estar OK para que la HU quede LISTA — sin
+    # esto, un error real en el otro UDZ (ej. emit_event mal puesto en
+    # Transmisión/Resultados) quedaba invisible mientras el activo pasara,
+    # y había que elegirlo a mano en el selector para que se detectara.
+    for _val_extra in resultado.get("validaciones_udz_extra", {}).values():
+        for _k_cruzada in ("s3_path", "workflow_vs_id", "ambiente_workflow_id", "udz_transmisiones"):
+            _v_extra = _val_extra.get(_k_cruzada, {})
+            if not _v_extra.get("na", False):
+                criticos.append(_val_ok(_v_extra))
     if incompleto_por_archivos:
         # DESPLIEGUE sin TA/AID/UDZ: el estado general es INCOMPLETO, no
         # ERROR, porque todavía no hay ni los archivos base.
