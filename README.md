@@ -217,7 +217,16 @@ o manualmente:
 ```
 .venv\Scripts\python -m pytest tests\ -v
 ```
-
+TA → PDN · 15:23:15
+15:23:11›Componente: TA  ·  Ambiente: PDN  ·  Tabla destino: nu0600001-plataforma-ia-pdn-text-analyzer-table
+15:23:11›Archivo: ta_sitio_contenidos_invecocomercioinforme 3.json
+15:23:11›JSON válido — 4 campo(s) de primer nivel
+15:23:11›Cargando credenciales desde: C:\Users\jeelmuno\Documents\Desarrollos\2. AID\1. Deeler\aws_credentials.json
+15:23:13›Cuenta AWS: 084657397209
+15:23:13›ARN: arn:aws:sts::084657397209:assumed-role/AWSReservedSSO_Demanda-DynamoDB-Esc-13798651_0c8a8151125d905d/jeelmuno@bancolombia.com.co
+15:23:14›Conectando a tabla: nu0600001-plataforma-ia-pdn-text-analyzer-table
+15:23:14✓put_item OK — ta_sitio_contenidos_invecocomercioinforme 3.json → nu0600001-plataforma-ia-pdn-text-analyzer-table
+15:23:15⚠AVISO: no se pudo verificar la escritura (el put_item sí fue OK): An error occurred (ValidationException) when calling the GetItem operation: The provided key element does not match the schema
 Los tests importan `core.analysis` directo (`import core.analysis`) — no
 necesitan `streamlit run` porque ese módulo no tiene layout, solo la lógica de
 validación. Incluyen tests contra las HU de ejemplo en `Backlog_Dealer/` y
