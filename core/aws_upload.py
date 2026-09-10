@@ -15,6 +15,26 @@ from pathlib import Path
 from .config import AWS_CRED_FILE, AWS_TABLAS
 
 
+def _armar_key(tabla_ref, item: dict):
+    """Arma el dict de Key para get_item con TODOS los atributos de la clave
+    de la tabla, no solo el primero — si la tabla tiene clave compuesta
+    (partition key + sort key), DynamoDB exige los dos juntos en el Key o
+    tira ValidationException ("provided key element does not match the
+    schema"), aunque el put_item con el ítem completo sí haya funcionado.
+    Devuelve (key_dict, faltantes) — faltantes son atributos de la clave que
+    no están presentes en el ítem."""
+    key_dict = {}
+    faltantes = []
+    for elemento in tabla_ref.key_schema:
+        attr_name = elemento["AttributeName"]
+        valor = item.get(attr_name)
+        if valor is None:
+            faltantes.append(attr_name)
+        else:
+            key_dict[attr_name] = valor
+    return key_dict, faltantes
+
+
 def cargar_credenciales_aws(ruta: Path) -> dict:
     if not ruta.exists():
         raise FileNotFoundError(f"No existe el archivo de credenciales AWS: {ruta}")
@@ -114,16 +134,16 @@ def subir_componente(tipo: str, archivo: Path, ambiente: str = "qa") -> dict:
 
     # Releer el item para confirmar que realmente quedó guardado.
     try:
-        pk_name = tabla_ref.key_schema[0]["AttributeName"]
-        pk_valor = item.get(pk_name)
-        if pk_valor is None:
-            _log(f"AVISO: no se pudo verificar — el item no tiene la partition key '{pk_name}'")
+        key_dict, faltantes = _armar_key(tabla_ref, item)
+        if faltantes:
+            _log(f"AVISO: no se pudo verificar — el item no tiene: {', '.join(faltantes)}")
         else:
-            leido = tabla_ref.get_item(Key={pk_name: pk_valor}).get("Item")
+            leido = tabla_ref.get_item(Key=key_dict).get("Item")
+            _key_txt = ", ".join(f"{k}='{v}'" for k, v in key_dict.items())
             if leido:
-                _log(f"Verificado: el item quedó guardado en {tabla} ({pk_name}='{pk_valor}')")
+                _log(f"Verificado: el item quedó guardado en {tabla} ({_key_txt})")
             else:
-                _log(f"AVISO: se subió pero no se pudo releer el item ({pk_name}='{pk_valor}')")
+                _log(f"AVISO: se subió pero no se pudo releer el item ({_key_txt})")
     except Exception as e:
         _log(f"AVISO: no se pudo verificar la escritura (el put_item sí fue OK): {e}")
 
@@ -176,16 +196,16 @@ def verificar_en_tabla(tipo: str, archivo: Path, ambiente: str = "pdn") -> dict:
         session = boto3.Session(**creds)
         dynamodb = session.resource("dynamodb", verify=False)
         tabla_ref = dynamodb.Table(tabla)
-        pk_name = tabla_ref.key_schema[0]["AttributeName"]
-        pk_valor = item.get(pk_name)
-        if pk_valor is None:
-            _log(f"ERROR: el archivo no tiene la partition key '{pk_name}'")
+        key_dict, faltantes = _armar_key(tabla_ref, item)
+        if faltantes:
+            _log(f"ERROR: el archivo no tiene: {', '.join(faltantes)}")
             return {"existe": False, "log": log}
-        leido = tabla_ref.get_item(Key={pk_name: pk_valor}).get("Item")
+        _key_txt = ", ".join(f"{k}='{v}'" for k, v in key_dict.items())
+        leido = tabla_ref.get_item(Key=key_dict).get("Item")
         if leido:
-            _log(f"Encontrado en {tabla} ({pk_name}='{pk_valor}') — ya está desplegado ahí")
+            _log(f"Encontrado en {tabla} ({_key_txt}) — ya está desplegado ahí")
             return {"existe": True, "tabla": tabla, "log": log}
-        _log(f"No se encontró en {tabla} ({pk_name}='{pk_valor}')")
+        _log(f"No se encontró en {tabla} ({_key_txt})")
         return {"existe": False, "tabla": tabla, "log": log}
     except NoCredentialsError:
         _log("ERROR: no hay credenciales AWS configuradas")

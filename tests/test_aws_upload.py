@@ -152,3 +152,111 @@ def test_subir_componente_convierte_floats_a_decimal(tmp_path, monkeypatch):
     assert resultado["ok"] is True, resultado["log"]
     assert isinstance(item_capturado["peso"], Decimal)
     assert not isinstance(item_capturado["peso"], float)
+
+
+#  Regresión: tabla con clave compuesta (partition key + sort key) — DynamoDB
+#  exige los dos atributos juntos en el Key del get_item, no solo el primero
+#  de key_schema, o tira ValidationException aunque el put_item haya sido OK.
+
+def _preparar_mocks_aws(monkeypatch, tmp_path, key_schema, item_guardado_devuelto="usar_capturado"):
+    """Arma boto3/botocore falsos + credenciales, devuelve la FakeTable para
+    poder inspeccionar con qué Key se llamó a get_item."""
+    import sys
+    import types
+
+    _key_schema = key_schema
+
+    class FakeTable:
+        def __init__(self):
+            self.get_item_key_recibida = None
+
+        def put_item(self, Item):
+            self.item_capturado = Item
+
+        def get_item(self, Key):
+            self.get_item_key_recibida = Key
+            if item_guardado_devuelto == "usar_capturado":
+                return {"Item": self.item_capturado}
+            return {"Item": item_guardado_devuelto} if item_guardado_devuelto else {}
+
+        key_schema = _key_schema
+
+    fake_table = FakeTable()
+
+    class FakeDynamoResource:
+        def Table(self, nombre):
+            return fake_table
+
+    class FakeSTS:
+        def get_caller_identity(self):
+            return {"Account": "123", "Arn": "arn:aws:iam::123:user/test"}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            pass
+
+        def client(self, nombre, verify=None):
+            return FakeSTS()
+
+        def resource(self, nombre, verify=None):
+            return FakeDynamoResource()
+
+    fake_boto3 = types.ModuleType("boto3")
+    fake_boto3.Session = FakeSession
+
+    fake_botocore = types.ModuleType("botocore")
+    fake_botocore_exceptions = types.ModuleType("botocore.exceptions")
+    fake_botocore_exceptions.ClientError = type("ClientError", (Exception,), {})
+    fake_botocore_exceptions.NoCredentialsError = type("NoCredentialsError", (Exception,), {})
+    fake_botocore_exceptions.EndpointConnectionError = type("EndpointConnectionError", (Exception,), {})
+
+    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+    monkeypatch.setitem(sys.modules, "botocore", fake_botocore)
+    monkeypatch.setitem(sys.modules, "botocore.exceptions", fake_botocore_exceptions)
+
+    creds_path = tmp_path / "creds.json"
+    creds_path.write_text(json.dumps({
+        "aws_access_key_id": "AKIA123", "aws_secret_access_key": "x", "region_name": "us-east-1",
+    }), encoding="utf-8")
+    monkeypatch.setattr(aws_upload, "AWS_CRED_FILE", str(creds_path))
+
+    return fake_table
+
+
+def test_subir_componente_tabla_con_clave_compuesta_verifica_con_las_dos(tmp_path, monkeypatch):
+    """Bug real: con partition key + sort key, get_item con un solo atributo
+    tira 'ValidationException: provided key element does not match the
+    schema' — el put_item sale bien (usa el item completo) pero la
+    verificación posterior fallaba siempre. _armar_key debe mandar los dos."""
+    archivo = tmp_path / "ta_x.json"
+    archivo.write_text(json.dumps({"cu_name": "caso_x", "resource_name": "recurso_y"}), encoding="utf-8")
+
+    fake_table = _preparar_mocks_aws(monkeypatch, tmp_path, key_schema=[
+        {"AttributeName": "cu_name", "KeyType": "HASH"},
+        {"AttributeName": "resource_name", "KeyType": "RANGE"},
+    ])
+
+    resultado = aws_upload.subir_componente("ta", archivo, ambiente="qa")
+
+    assert resultado["ok"] is True, resultado["log"]
+    assert fake_table.get_item_key_recibida == {"cu_name": "caso_x", "resource_name": "recurso_y"}
+    assert any("Verificado" in linea for linea in resultado["log"])
+
+
+def test_verificar_en_tabla_con_clave_compuesta(tmp_path, monkeypatch):
+    archivo = tmp_path / "ta_x.json"
+    archivo.write_text(json.dumps({"cu_name": "caso_x", "resource_name": "recurso_y"}), encoding="utf-8")
+
+    fake_table = _preparar_mocks_aws(
+        monkeypatch, tmp_path,
+        key_schema=[
+            {"AttributeName": "cu_name", "KeyType": "HASH"},
+            {"AttributeName": "resource_name", "KeyType": "RANGE"},
+        ],
+        item_guardado_devuelto={"cu_name": "caso_x", "resource_name": "recurso_y"},
+    )
+
+    resultado = aws_upload.verificar_en_tabla("ta", archivo, ambiente="pdn")
+
+    assert resultado["existe"] is True, resultado["log"]
+    assert fake_table.get_item_key_recibida == {"cu_name": "caso_x", "resource_name": "recurso_y"}
