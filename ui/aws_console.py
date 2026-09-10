@@ -337,28 +337,39 @@ def _construir_componentes(r: dict) -> list:
     """Arma la lista de componentes a mostrar en la consola de subida: TA y
     AID siempre son uno solo, UDZ puede ser uno o dos. Cada elemento trae
     "clave" (prefijo de los campos de trazabilidad y claves de widgets),
-    "tipo_tabla" (ta/aid/udz, para AWS_TABLAS y subir_componente) y "label"."""
+    "tipo_tabla" (ta/aid/udz, para AWS_TABLAS y subir_componente) y "label".
+
+    Para DESPLIEGUE se listan los 3 slots (TA/AID/UDZ) aunque falte el
+    archivo, para que se vea qué falta. Para MODIFICACIÓN, que legítimamente
+    puede no tocar alguno de los tres, se omite el slot sin archivo — así no
+    cuenta como "pendiente" y una MODIFICACIÓN sí puede llegar a estar 100%
+    lista para la subida masiva."""
+    es_despliegue = "DESPLIEGUE" in (r.get("tipo_cambio") or "").upper()
     val_principal = r.get("validaciones", {})
-    componentes = [
-        {"clave": "ta", "tipo_tabla": "ta", "label": "TA", "label_corto": "TA",
-         "archivo": r.get("ta_activo"), "val": val_principal, "validado": True},
-        {"clave": "aid", "tipo_tabla": "aid", "label": "AID", "label_corto": "AID",
-         "archivo": r.get("aid_activo"), "val": val_principal, "validado": True},
-    ]
+    componentes = []
+    if r.get("ta_activo") or es_despliegue:
+        componentes.append({"clave": "ta", "tipo_tabla": "ta", "label": "TA", "label_corto": "TA",
+                             "archivo": r.get("ta_activo"), "val": val_principal, "validado": True})
+    if r.get("aid_activo") or es_despliegue:
+        componentes.append({"clave": "aid", "tipo_tabla": "aid", "label": "AID", "label_corto": "AID",
+                             "archivo": r.get("aid_activo"), "val": val_principal, "validado": True})
 
     slots_udz = detectar_slots_udz(r)
     if len(slots_udz) == 1:
         s = slots_udz[0]
-        _sub = f" ({s['tipo']})" if s["tipo"] else ""
-        componentes.append({
-            "clave": "udz", "tipo_tabla": "udz", "label": f"UDZ{_sub}", "label_corto": "UDZ",
-            "archivo": s["archivo"], "val": val_principal, "validado": True,
-        })
+        if s["archivo"] or es_despliegue:
+            _sub = f" ({s['tipo']})" if s["tipo"] else ""
+            componentes.append({
+                "clave": "udz", "tipo_tabla": "udz", "label": f"UDZ{_sub}", "label_corto": "UDZ",
+                "archivo": s["archivo"], "val": val_principal, "validado": True,
+            })
     else:
         # El activo usa las validaciones "oficiales"; el otro archivo tiene
         # las suyas propias en "validaciones_udz_extra".
         _extra = r.get("validaciones_udz_extra", {})
         for s in slots_udz:
+            if not s["archivo"]:
+                continue
             _clave = f"udz_{s['tipo'].lower()}" if s["tipo"] else "udz_otro"
             _val = val_principal if s["es_activo"] else _extra.get(_clave)
             componentes.append({
@@ -932,6 +943,9 @@ def _render_tab_individual(resultados):
         "Confirmo que quiero escribir en PRODUCCIÓN (PDN) — esto no es reversible",
     )
     componentes = _construir_componentes(r)
+    if not componentes:
+        st.info("Esta HU (MODIFICACIÓN) todavía no tiene ningún TA/AID/UDZ adjuntado para subir.", icon=MI_INFO)
+        return
 
     # Un solo cálculo de estado por componente, reusado por el resumen, el
     # botón masivo y cada tarjeta.
@@ -1112,21 +1126,19 @@ def _render_tab_individual(resultados):
 
 def _render_tab_masiva(resultados: list):
     """Subir varias HU del sprint de una sola vez, en vez de pasar una por
-    una por la pestaña individual.
+    una por la pestaña individual. Incluye tanto DESPLIEGUE como
+    MODIFICACIÓN — _construir_componentes ya sabe que una MODIFICACIÓN
+    puede legítimamente no traer alguno de los tres archivos (ese slot se
+    omite, no cuenta como "pendiente").
 
-    Una HU solo aparece seleccionable si TODOS sus componentes (TA/AID/UDZ,
-    incluidos ambos slots si hay crudos+resultados por separado) están
-    realmente listos para el ambiente elegido: no sube una HU a medias.
-
-    Solo se ofrecen HU de tipo DESPLIEGUE, porque una MODIFICACIÓN que
-    legítimamente no traiga alguno de los tres archivos nunca llegaría
-    a 100% acá."""
+    Una HU solo aparece seleccionable si TODOS sus componentes presentes
+    (TA/AID/UDZ, incluidos ambos slots si hay crudos+resultados por
+    separado) están realmente listos para el ambiente elegido: no sube una
+    HU a medias."""
     st.markdown("""
     <div style="font-size:12px;color:#78716C;margin-bottom:14px">
-        Subí varias HU de tipo DESPLIEGUE del sprint de una sola vez. Solo se puede marcar una HU si
-        está 100% lista (sin alertas) para el ambiente elegido — no sube una HU a medias.
-        Las HU de MODIFICACIÓN no aparecen acá — subilas desde "Análisis Técnico Detallado" arriba,
-        una por vez, en la pestaña "Subida individual".
+        Subí varias HU del sprint de una sola vez (DESPLIEGUE y MODIFICACIÓN). Solo se puede marcar
+        una HU si está 100% lista (sin alertas) para el ambiente elegido — no sube una HU a medias.
     </div>
     """, unsafe_allow_html=True)
 
@@ -1134,10 +1146,10 @@ def _render_tab_masiva(resultados: list):
     # intacta (la usa _persistir_subida_aws para actualizar session_state);
     # los filtros de abajo arman una lista aparte solo para decidir qué
     # mostrar/marcar.
-    resultados_desplegable = [r for r in resultados if "DESP" in (r.get("tipo_cambio") or "").upper()]
+    resultados_desplegable = list(resultados)
 
     if not resultados_desplegable:
-        st.info("No hay HU de tipo DESPLIEGUE cargadas todavía — analizá un sprint primero.", icon=MI_INFO)
+        st.info("No hay HU cargadas todavía — analizá un sprint primero.", icon=MI_INFO)
         return
 
     ambiente, confirma_pdn = _selector_ambiente(
@@ -1204,7 +1216,8 @@ def _render_tab_masiva(resultados: list):
         r = c["r"]
         hu_id = r.get("hu_id")
         _ya_en_pdn = " · ✅ ya en PDN" if obtener_estado_pdn_real(r)["desplegado"] else ""
-        _label = f"{hu_id} — {r.get('hu_title', '')} ({c['n_listos']}/{c['n_total']} listos){_ya_en_pdn}"
+        _tipo_corto = (r.get("tipo_cambio") or "?")[:4]
+        _label = f"{hu_id} [{_tipo_corto}] — {r.get('hu_title', '')} ({c['n_listos']}/{c['n_total']} listos){_ya_en_pdn}"
         _key = f"aws_masivo_check_{hu_id}"
         # Streamlit no pisa el valor de un checkbox ya creado con un nuevo
         # "value" en reruns posteriores, así que se resetea manualmente
