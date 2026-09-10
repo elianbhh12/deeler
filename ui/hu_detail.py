@@ -763,7 +763,7 @@ def render_hu_detail(resultados, sprint_activo):
                         detalle_fn()
 
             #  Grupo TA
-            val_group("TA — Text Analyzer (extracción)", anchor="val-grupo-ta", n_err_grupo=_tallies_grupo["val-grupo-ta"]["err"])
+            val_group("TA — Text Analyzer (extracción)", anchor="val-grupo-ta", n_err_grupo=_tallies_grupo.get("val-grupo-ta", {}).get("err", 0))
 
             ta_cu_val = ta_cu_info.get("cu_name", "")
             def _ta_cu_detail():
@@ -813,7 +813,7 @@ def render_hu_detail(resultados, sprint_activo):
                      na=kf_na, campo="TA...kafka_output_topic", valor_ok=topic)
 
             #  Grupo AID
-            val_group("AID — configuración", anchor="val-grupo-aid", n_err_grupo=_tallies_grupo["val-grupo-aid"]["err"])
+            val_group("AID — configuración", anchor="val-grupo-aid", n_err_grupo=_tallies_grupo.get("val-grupo-aid", {}).get("err", 0))
 
             aid_tec_val = aid_tec_info.get("tecnologia", "")
             def _aid_tec_detail():
@@ -875,7 +875,7 @@ def render_hu_detail(resultados, sprint_activo):
                      campo="AID...STEP_VARIABLES.copiarResultadoBucket", valor_ok=(copiar_vals[0] if copiar_vals else None))
 
             #  Grupo UDZ
-            val_group("UDZ — eventos", anchor="val-grupo-udz", n_err_grupo=_tallies_grupo["val-grupo-udz"]["err"])
+            val_group("UDZ — eventos", anchor="val-grupo-udz", n_err_grupo=_tallies_grupo.get("val-grupo-udz", {}).get("err", 0))
 
             tx_tipo = udz_tx_info.get("udz_tipo", "DESCONOCIDO")
             def _udz_tx_detail():
@@ -919,7 +919,7 @@ def render_hu_detail(resultados, sprint_activo):
                      valor_ok=(tx_tipo if tx_tipo != "DESCONOCIDO" else None))
 
             #  Grupo cruzadas: TA <-> AID <-> UDZ
-            val_group("Cruzadas — TA ↔ AID ↔ UDZ", anchor="val-grupo-cruzadas", n_err_grupo=_tallies_grupo["val-grupo-cruzadas"]["err"])
+            val_group("Cruzadas — TA ↔ AID ↔ UDZ", anchor="val-grupo-cruzadas", n_err_grupo=_tallies_grupo.get("val-grupo-cruzadas", {}).get("err", 0))
 
             aid_path = s3_info.get("aid", "")
             udz_path = s3_info.get("udz", "")

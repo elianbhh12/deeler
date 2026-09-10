@@ -546,3 +546,17 @@ def test_udz_crudos_bien_configurado_sigue_dando_ok(appmod, tmp_path):
     })
     assert r["validaciones"]["udz_transmisiones"]["udz_tipo"] == "CRUDOS"
     assert r["validaciones"]["udz_transmisiones"]["ok"] is True
+
+
+def test_udz_no_clasificable_en_despliegue_da_error(appmod, tmp_path):
+    """Un UDZ presente pero que no se puede clasificar ni por s3_path
+    ('crudos'/'resultados') ni por require_transmission=true queda
+    'DESCONOCIDO' — en un DESPLIEGUE eso es un error real (antes de este
+    fix pasaba siempre en verde sin validar nada), en una MODIFICACIÓN
+    sigue sin bloquear."""
+    r = _hu_udz_transmisiones(tmp_path, {
+        "s3_path": "s3://bucket-pdn-tx/miscelaneo/algo",
+        "require_transmission": "false", "emit_event": "false",
+    })
+    assert r["validaciones"]["udz_transmisiones"]["udz_tipo"] == "DESCONOCIDO"
+    assert r["validaciones"]["udz_transmisiones"]["ok"] is False

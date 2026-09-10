@@ -164,7 +164,7 @@ if ITERATION_PATH:
 # ITERATION_PATH cada sprint nuevo, sin tener que tocar código para que
 # aparezca como opción en el desplegable.
 if _sprint_default_num:
-    SPRINTS_FRECUENTES = list(range(_sprint_default_num - 2, _sprint_default_num + 4))
+    SPRINTS_FRECUENTES = list(range(max(1, _sprint_default_num - 2), _sprint_default_num + 4))
 else:
     SPRINTS_FRECUENTES = [251, 252, 253, 254, 255]
 
