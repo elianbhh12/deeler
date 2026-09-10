@@ -91,8 +91,19 @@ TEAM           = os.getenv("ADO_TEAM")
 AREA           = os.getenv("ADO_AREA")
 PAT            = os.getenv("ADO_PAT")
 ITERATION_PATH = os.getenv("ITERATION_PATH")
-ROOT_FOLDER    = os.getenv("ROOT_FOLDER", r"C:\Backlog_Dealer")
 DEALER_NAME    = os.getenv("DEALER_NAME", "Dealer")
+
+#  ROOT_FOLDER: por default apunta a "Backlog_Dealer" junto al proyecto (no a
+#  una ruta fija de un usuario/máquina en particular) — así el mismo .env.example
+#  funciona igual sin importar quién clone el repo o en qué carpeta. Si se
+#  define en .env, una ruta relativa se resuelve contra la raíz del proyecto;
+#  una ruta absoluta (ej. un disco/carpeta compartida propia) se respeta tal cual.
+_root_folder_env = os.getenv("ROOT_FOLDER", "").strip()
+if _root_folder_env:
+    _root_folder_path = Path(_root_folder_env)
+    ROOT_FOLDER = str(_root_folder_path if _root_folder_path.is_absolute() else BASE_DIR / _root_folder_path)
+else:
+    ROOT_FOLDER = str(BASE_DIR / "Backlog_Dealer")
 
 #  Variables obligatorias para poder traer HU desde ADO (Paso 1). No se
 #  valida al importar (el resto de la app funciona igual sin ADO, ej. seguir
@@ -148,11 +159,14 @@ if ITERATION_PATH:
     if _m:
         _sprint_default_num = int(_m.group(1))
 
-# Sprints frecuentes — asegurar que el actual esté incluido y ordenado
-_base_sprints = [251, 252, 253, 254, 255]
-if _sprint_default_num and _sprint_default_num not in _base_sprints:
-    _base_sprints.append(_sprint_default_num)
-SPRINTS_FRECUENTES = sorted(_base_sprints)
+# Sprints frecuentes — rango dinámico alrededor del sprint actual (sacado de
+# ITERATION_PATH), no una lista fija: así alcanza con actualizar
+# ITERATION_PATH cada sprint nuevo, sin tener que tocar código para que
+# aparezca como opción en el desplegable.
+if _sprint_default_num:
+    SPRINTS_FRECUENTES = list(range(_sprint_default_num - 2, _sprint_default_num + 4))
+else:
+    SPRINTS_FRECUENTES = [251, 252, 253, 254, 255]
 
 AUTH    = base64.b64encode(f":{PAT}".encode()).decode() if PAT else ""
 HEADERS = {"Authorization": f"Basic {AUTH}", "Content-Type": "application/json"}
