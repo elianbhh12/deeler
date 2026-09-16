@@ -218,10 +218,10 @@ def detectar_slots_udz(r: dict) -> list:
     return slots
 
 
-def obtener_estado_pdn_real(r: dict) -> dict:
-    """Si la HU realmente quedó desplegada en PDN: TODOS sus componentes
-    presentes (TA/AID/UDZ, incluyendo ambos slots si hay crudos+resultados
-    separados) ya se subieron con éxito a la tabla de PDN.
+def _obtener_estado_ambiente_real(r: dict, ambiente: str) -> dict:
+    """Si la HU realmente quedó desplegada en `ambiente` (qa/pdn): TODOS sus
+    componentes presentes (TA/AID/UDZ, incluyendo ambos slots si hay
+    crudos+resultados separados) ya se subieron con éxito a esa tabla.
 
     Devuelve {"desplegado": bool, "por": str|None, "en": str|None} de la
     última subida entre los componentes."""
@@ -242,20 +242,35 @@ def obtener_estado_pdn_real(r: dict) -> dict:
 
     subidas = []
     for clave in componentes:
-        # "_aws_pdn_por" es el registro específico de PDN (no se pisa si
-        # después se sube el mismo componente a QA). Los "_aws_ambiente/_por"
-        # sin ambiente son compatibilidad con análisis viejos, de antes de
-        # separar el registro por ambiente — solo sirven mientras ese
-        # componente no se haya vuelto a subir a otro ambiente desde entonces.
-        _por = r.get(f"{clave}_aws_pdn_por") or (r.get(f"{clave}_aws_por") if r.get(f"{clave}_aws_ambiente") == "pdn" else None)
+        # "_aws_{ambiente}_por" es el registro específico de ese ambiente (no
+        # se pisa si después se sube el mismo componente al otro ambiente).
+        # Los "_aws_ambiente/_por" sin ambiente son compatibilidad con
+        # análisis viejos, de antes de separar el registro por ambiente —
+        # solo sirven mientras ese componente no se haya vuelto a subir a
+        # otro ambiente desde entonces.
+        _por = r.get(f"{clave}_aws_{ambiente}_por") or (r.get(f"{clave}_aws_por") if r.get(f"{clave}_aws_ambiente") == ambiente else None)
         if not _por:
             return {"desplegado": False, "por": None, "en": None}
-        _en = r.get(f"{clave}_aws_pdn_en") or r.get(f"{clave}_aws_en") or ""
+        _en = r.get(f"{clave}_aws_{ambiente}_en") or r.get(f"{clave}_aws_en") or ""
         subidas.append((_en, _por))
 
     subidas.sort()
     _en, _por = subidas[-1]
     return {"desplegado": True, "por": _por, "en": _en}
+
+
+def obtener_estado_pdn_real(r: dict) -> dict:
+    """Si la HU realmente quedó desplegada en PDN — ver _obtener_estado_ambiente_real."""
+    return _obtener_estado_ambiente_real(r, "pdn")
+
+
+def obtener_estado_qa_real(r: dict) -> dict:
+    """Análogo a obtener_estado_pdn_real pero para QA — mismo criterio:
+    TODOS los componentes presentes de la HU deben tener su registro de
+    subida a QA. Pensado para cuando la subida a PDN se hace por otra vía y
+    acá solo se sube a QA, pero igual se quiere un registro/validación
+    equivalente al de PDN sin perder nada de lo que ya existe para PDN."""
+    return _obtener_estado_ambiente_real(r, "qa")
 
 
 def buscar_archivos(hu_folder: Path):
@@ -734,13 +749,12 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
 
         validar_step_vars(aid)
 
-    # Regla: copiarResultadoBucket siempre debe ser true (cuando aplica).
-    # out_zone no forma parte de la regla — no hace falta que esté, y su
-    # presencia tampoco es un conflicto ni se valida.
+    # Regla: copiarResultadoBucket siempre debe ser true (cuando aplica), y
+    # out_zone NO debe existir en el AID (su sola presencia es error).
     if aid and tiene_call_api_con_step_vars:
         tiene_copiar    = len(copiar_vals) > 0
         copiar_es_true  = all(str(v).lower() == "true" for v in copiar_vals) if copiar_vals else False
-        out_zone_ok = True
+        out_zone_ok = len(out_zones) == 0
         copiar_ok   = tiene_copiar and copiar_es_true
     else:
         # Sin AID, sin call_api+STEP_VARIABLES, o MODIFICACIÓN → N/A, no bloquear
@@ -748,6 +762,14 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
         copiar_ok   = not es_despliegue
 
     oz_na = (not bool(aid)) or (not tiene_call_api_con_step_vars)
+    if oz_na:
+        _oz_detalle = f"{ICON_NA} No aplica (sin call_api+STEP_VARIABLES)"
+    elif not out_zone_ok:
+        _oz_detalle = f"{ICON_ERROR} out_zone no debe existir en el AID: {out_zones}"
+    elif not copiar_ok:
+        _oz_detalle = f"{ICON_ERROR} copiarResultadoBucket debe ser true"
+    else:
+        _oz_detalle = f"{ICON_OK} copiarResultadoBucket=true, sin out_zone"
     resultado["validaciones"]["out_zone_copiar"] = {
         "out_zones": out_zones,
         "copiar_vals": copiar_vals,
@@ -756,7 +778,7 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
         "na": oz_na,
         "out_zone_ok": out_zone_ok or oz_na,
         "copiar_ok": copiar_ok or oz_na,
-        "detalle": f"{ICON_NA} No aplica (sin call_api+STEP_VARIABLES)" if oz_na else (f"{ICON_OK} copiarResultadoBucket=true" if copiar_ok else f"{ICON_ERROR} copiarResultadoBucket debe ser true")
+        "detalle": _oz_detalle,
     }
 
     # Estado general — todas las validaciones críticas que NO son N/A deben estar ok
@@ -862,4 +884,30 @@ def analizar_sprint(sprint_folder: Path) -> list:
 
         resultados.append(analizar_hu(d))
 
+    return resultados
+
+
+def cargar_todos_los_sprints(root_folder) -> list:
+    """Lee (sin re-analizar) el analisis_tecnico.json ya guardado de CADA HU
+    de TODOS los sprints que haya en ROOT_FOLDER, no solo el sprint cargado
+    en la sesión actual — para que el Excel consolidado sea un registro
+    histórico real y no se resetee cada vez que se analiza un sprint nuevo
+    (session_state["resultados"] se reemplaza por completo en ese momento,
+    pero los análisis de los sprints anteriores siguen intactos en disco)."""
+    root = Path(root_folder)
+    if not root.exists():
+        return []
+    resultados = []
+    for sprint_dir in sorted(root.iterdir()):
+        # Carpetas propias (ej. "_cargas_directas") no son sprints.
+        if not sprint_dir.is_dir() or sprint_dir.name.startswith("_"):
+            continue
+        for hu_dir in sorted(sprint_dir.iterdir()):
+            if not hu_dir.is_dir():
+                continue
+            an = hu_dir / "analisis" / "analisis_tecnico.json"
+            if an.exists():
+                data = cargar_json(an)
+                if data:
+                    resultados.append(data)
     return resultados

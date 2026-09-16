@@ -116,9 +116,8 @@ def test_out_zone_sin_copiar_bucket_bloquea_el_estado(appmod, tmp_path):
     'ok' que leía el agregador de criticos no existía en ese dict (solo existían
     out_zone_ok/copiar_ok), así que .get('ok', True) siempre devolvía True.
 
-    La regla real es solo copiarResultadoBucket=true — out_zone no forma
-    parte de ella (ni bloquea ni hace falta), así que este caso (falta
-    copiarResultadoBucket) sigue dando error igual con o sin out_zone."""
+    Este caso (falta copiarResultadoBucket, además de tener out_zone, que
+    tampoco debe existir) da error por las dos razones."""
     ta = {
         "cu_name": "caso_test", "type": "prompts",
         "kafka_output_topic": "documentreceivingmanagement.documentuploadedv1",
@@ -147,10 +146,9 @@ def test_out_zone_sin_copiar_bucket_bloquea_el_estado(appmod, tmp_path):
     )
 
 
-def test_out_zone_junto_con_copiar_bucket_true_ya_no_es_error(appmod, tmp_path):
-    """out_zone no es parte de la regla: que aparezca junto con
-    copiarResultadoBucket=true no debe dar error (antes se trataba como
-    conflicto)."""
+def test_out_zone_presente_es_error_aunque_copiar_bucket_sea_true(appmod, tmp_path):
+    """out_zone no debe existir en el AID — su sola presencia es error, sin
+    importar que copiarResultadoBucket esté en true."""
     ta = {
         "cu_name": "caso_test2", "type": "prompts",
         "kafka_output_topic": "documentreceivingmanagement.documentuploadedv1",
@@ -175,6 +173,37 @@ def test_out_zone_junto_con_copiar_bucket_true_ya_no_es_error(appmod, tmp_path):
 
     r = appmod.analizar_hu(hu_folder)
 
+    assert r["validaciones"]["out_zone_copiar"]["copiar_ok"] is True
+    assert r["validaciones"]["out_zone_copiar"]["out_zone_ok"] is False
+    assert r["estado_code"] == appmod.ESTADO_ERROR, (
+        "out_zone no debe existir en el AID, aunque copiarResultadoBucket sea true"
+    )
+
+
+def test_sin_out_zone_y_con_copiar_bucket_true_queda_listo(appmod, tmp_path):
+    """El caso correcto: copiarResultadoBucket=true y out_zone ausente."""
+    ta = {
+        "cu_name": "caso_test3", "type": "prompts",
+        "kafka_output_topic": "documentreceivingmanagement.documentuploadedv1",
+    }
+    aid = {
+        "workflow_name": "aid-pdn-test3", "s3_path": "s3://bucket-pdn-test3/resultados",
+        "use_case": "caso_test3", "TYPE": "topic",
+        "workflow_variables": {"tecnologia": "AID"},
+        "workflow_definition": [{
+            "STEP_NAME": "step1", "FUNCTION_NAME": "call_api", "LAST_STEP": "False",
+            "STEP_VARIABLES": {"JOB_NAME": "job1", "copiarResultadoBucket": "true"},
+        }],
+    }
+    udz = {"item": {
+        "id": "aid-pdn-test3", "s3_path": "s3://bucket-pdn-test3/resultados",
+        "require_transmission": "true", "emit_event": "false",
+    }}
+    hu_folder = _escribir_hu_minima(tmp_path, ta, aid, udz, "DESPLIEGUE")
+
+    r = appmod.analizar_hu(hu_folder)
+
+    assert r["validaciones"]["out_zone_copiar"]["out_zone_ok"] is True
     assert r["validaciones"]["out_zone_copiar"]["copiar_ok"] is True
     assert r["estado_code"] == appmod.ESTADO_LISTO
 
@@ -495,6 +524,56 @@ def test_obtener_estado_pdn_real_qa_sin_pdn_previo_no_desplegado(appmod):
     assert estado["desplegado"] is False
 
 
+#  obtener_estado_qa_real es el mismo criterio que obtener_estado_pdn_real
+#  pero para QA — para cuando PDN se sube por otra vía y acá solo interesa
+#  el registro/validación de QA, sin perder nada de lo que ya existe para PDN.
+
+def test_obtener_estado_qa_real_con_todos_los_componentes(appmod):
+    r = {
+        "ta_activo": "ta.json", "aid_activo": "aid.json", "udz_files": [],
+        "ta_aws_qa_por": "ana", "ta_aws_qa_en": "2026-01-01T10:00:00",
+        "aid_aws_qa_por": "ana", "aid_aws_qa_en": "2026-01-01T10:01:00",
+        "udz_aws_qa_por": "ana", "udz_aws_qa_en": "2026-01-01T10:02:00",
+    }
+    estado = appmod.obtener_estado_qa_real(r)
+    assert estado["desplegado"] is True
+    assert estado["por"] == "ana"
+
+
+def test_obtener_estado_qa_real_no_se_borra_por_subida_posterior_a_pdn(appmod):
+    r = {
+        "ta_activo": "ta.json", "aid_activo": None, "udz_files": [],
+        "ta_aws_qa_por": "ana", "ta_aws_qa_en": "2026-01-01T10:00:00",
+        # Actividad más reciente: el mismo TA se volvió a subir a PDN después.
+        "ta_aws_ambiente": "pdn", "ta_aws_por": "ana", "ta_aws_en": "2026-02-01T09:00:00",
+    }
+    estado = appmod.obtener_estado_qa_real(r)
+    assert estado["desplegado"] is True, "una subida posterior a PDN no debe borrar el estado de QA"
+
+
+def test_obtener_estado_qa_real_incompleto_no_desplegado(appmod):
+    r = {
+        "ta_activo": "ta.json", "aid_activo": "aid.json", "udz_files": [],
+        "ta_aws_qa_por": "ana", "ta_aws_qa_en": "2026-01-01T10:00:00",
+        # AID nunca se subió a QA.
+    }
+    estado = appmod.obtener_estado_qa_real(r)
+    assert estado["desplegado"] is False
+
+
+def test_obtener_estado_qa_real_y_pdn_real_son_independientes(appmod):
+    """El caso central del pedido: seguir subiendo solo a QA desde acá no
+    debe afectar el registro de PDN (que puede haberse hecho por otra vía
+    y quedar cargado a mano, ver ui.aws_console.render_recuperacion_pdn),
+    y viceversa."""
+    r = {
+        "ta_activo": "ta.json", "aid_activo": None, "udz_files": [],
+        "ta_aws_pdn_por": "ana", "ta_aws_pdn_en": "2026-01-01T10:00:00",
+    }
+    assert appmod.obtener_estado_pdn_real(r)["desplegado"] is True
+    assert appmod.obtener_estado_qa_real(r)["desplegado"] is False
+
+
 #  Regresión: udz_transmisiones no validaba nada real cuando require_transmission
 #  no era literalmente "true" — un UDZ de RESULTADOS (por s3_path) mal configurado
 #  con require_transmission=false pasaba como "NO_DEFINIDO" -> ok=True sin alertar,
@@ -600,3 +679,34 @@ def test_udz_no_activo_con_error_bloquea_estado_general(appmod, tmp_path):
     assert r["estado_code"] == appmod.ESTADO_ERROR, (
         "un error en el UDZ no activo (resultados) debe bloquear el estado LISTO igual"
     )
+
+
+#  Regresión: el Excel consolidado se armaba solo con la sesión actual
+#  (un solo sprint) y "se reseteaba" al analizar un sprint nuevo, aunque los
+#  análisis de sprints anteriores seguían intactos en disco.
+
+def test_cargar_todos_los_sprints_junta_varios_sprints(appmod, tmp_path):
+    ta = {"cu_name": "x", "type": "prompts", "kafka_output_topic": appmod.KAFKA_TOPIC_REQUERIDO}
+    aid = {
+        "workflow_name": "aid-pdn-x", "s3_path": "s3://bucket-pdn-x/resultados",
+        "use_case": "x", "TYPE": "topic", "workflow_variables": {"tecnologia": "AID"},
+        "workflow_definition": [{"STEP_NAME": "s1", "TYPE": "topic", "LAST_STEP": "False"}],
+    }
+    udz = {"item": {"id": "aid-pdn-x", "s3_path": "s3://bucket-pdn-x/resultados",
+                     "require_transmission": "true", "emit_event": "false"}}
+
+    for sprint_num in (253, 254):
+        sprint_folder = tmp_path / f"Sprint {sprint_num}"
+        hu_folder = _escribir_hu_minima(sprint_folder, ta, aid, udz, "DESPLIEGUE")
+        appmod.analizar_hu(hu_folder)
+
+    # Una carpeta que empieza con "_" (ej. _cargas_directas) no es un sprint.
+    (tmp_path / "_cargas_directas").mkdir()
+
+    resultados = appmod.cargar_todos_los_sprints(tmp_path)
+
+    assert len(resultados) == 2, "debe traer la HU de los dos sprints, no solo uno"
+
+
+def test_cargar_todos_los_sprints_con_carpeta_inexistente_no_revienta(appmod, tmp_path):
+    assert appmod.cargar_todos_los_sprints(tmp_path / "no_existe") == []

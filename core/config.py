@@ -170,3 +170,9 @@ else:
 
 AUTH    = base64.b64encode(f":{PAT}".encode()).decode() if PAT else ""
 HEADERS = {"Authorization": f"Basic {AUTH}", "Content-Type": "application/json"}
+
+#  Carga directa (sin HU): carpeta dentro de ROOT_FOLDER donde queda el
+#  registro de auditoría y una copia de cada archivo subido así — compartida
+#  entre ui/aws_console.py (que escribe) y core/reports.py (que la lee para
+#  la hoja "Cargas Directas" del Excel consolidado).
+CARGAS_DIRECTAS_DIR = "_cargas_directas"

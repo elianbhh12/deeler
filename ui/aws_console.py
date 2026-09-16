@@ -16,7 +16,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from core.config import ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, MI_CLOUD, MI_INFO, MI_REFRESH, MI_SETTINGS, MI_OK, MI_ERROR, MI_SEARCH, AWS_TABLAS, AWS_CRED_FILE, ROOT_FOLDER
+from core.config import ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, MI_CLOUD, MI_INFO, MI_REFRESH, MI_SETTINGS, MI_OK, MI_ERROR, MI_SEARCH, AWS_TABLAS, AWS_CRED_FILE, ROOT_FOLDER, CARGAS_DIRECTAS_DIR
 from core.analysis import _val_ok, analizar_hu, clasificar_udz_desde_json, detectar_ambiente, detectar_slots_udz, normalizar_s3, obtener_estado_pdn_real
 from core.aws_upload import subir_componente, verificar_en_tabla
 from core.utils import obtener_usuario_actual, safe_name
@@ -52,9 +52,6 @@ CRITERIOS_ACEPTACION = {
 #  con st.json(). Arriba de este tamaño, se muestra una vista previa truncada.
 LIMITE_PREVIEW_KB = 30
 
-#  Carga directa (sin HU): carpeta donde queda el registro de auditoría y una
-#  copia de cada archivo subido así, ya que no hay carpeta de HU donde dejarlo.
-CARGAS_DIRECTAS_DIR = "_cargas_directas"
 LIMITE_CARGAS_DIRECTAS = 500
 
 
@@ -147,10 +144,28 @@ def _validar_cruce_flujo(items: list) -> dict:
     return avisos
 
 
+def _requiere_transmision_desde_texto(texto: str) -> str:
+    """Sí/No según require_transmission del UDZ, para el registro de
+    auditoría — "-" si no se pudo determinar (JSON inválido o campo ausente)."""
+    try:
+        data = json.loads(texto)
+    except Exception:
+        return "-"
+    item = data.get("item") if isinstance(data, dict) and isinstance(data.get("item"), dict) else data
+    valor = str(item.get("require_transmission", "")).strip().lower() if isinstance(item, dict) else ""
+    if valor == "true":
+        return "Sí"
+    if valor == "false":
+        return "No"
+    return "-"
+
+
 def _registrar_carga_directa(tipo_tabla: str, ambiente: str, tabla: str, archivo_original: str,
-                              archivo_guardado: Path, referencia: str, ok: bool):
+                              archivo_guardado: Path, referencia: str, ok: bool, transmision: str = "-"):
     """Deja constancia de una carga sin HU asociada — no hay carpeta de HU
-    donde guardar esto, así que se lleva un log JSON aparte en ROOT_FOLDER."""
+    donde guardar esto, así que se lleva un log JSON aparte en ROOT_FOLDER.
+    `transmision` (Sí/No/-) solo tiene sentido para tipo_tabla="udz" — para
+    TA/AID se guarda el nombre del archivo, que ya viaja en archivo_original."""
     log_path = Path(ROOT_FOLDER) / CARGAS_DIRECTAS_DIR / "log.json"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -167,6 +182,7 @@ def _registrar_carga_directa(tipo_tabla: str, ambiente: str, tabla: str, archivo
         "archivo_guardado": str(archivo_guardado),
         "referencia": referencia,
         "ok": ok,
+        "transmision": transmision,
     })
     if len(registros) > LIMITE_CARGAS_DIRECTAS:
         registros = registros[-LIMITE_CARGAS_DIRECTAS:]
@@ -177,7 +193,10 @@ def _registrar_carga_directa(tipo_tabla: str, ambiente: str, tabla: str, archivo
     os.replace(_tmp_path, log_path)
 
 
-def _leer_cargas_directas() -> list:
+def leer_cargas_directas() -> list:
+    """Registro completo de "Carga directa" (sin HU) — usado tanto por el
+    historial en pantalla como por la hoja "Cargas Directas" del Excel
+    consolidado (ver core.reports.generar_excel_consolidado)."""
     log_path = Path(ROOT_FOLDER) / CARGAS_DIRECTAS_DIR / "log.json"
     if not log_path.exists():
         return []
@@ -837,9 +856,11 @@ def _render_tab_directa():
             with st.spinner(f"Subiendo {nombre_flujo} · {archivo.name} ({tipo_tabla.upper()}) a {ambiente.upper()}..."):
                 resultado = subir_componente(tipo_tabla, _ruta_guardada, ambiente=ambiente)
             _agregar_al_log(f"{nombre_flujo} · {tipo_tabla.upper()} · {archivo.name}", ambiente, resultado)
+            _transmision = _requiere_transmision_desde_texto(it["texto"]) if tipo_tabla == "udz" else "-"
             _registrar_carga_directa(
                 tipo_tabla, ambiente, resultado.get("tabla", it.get("tabla_destino")),
                 archivo.name, _ruta_guardada, nombre_flujo, bool(resultado.get("ok")),
+                transmision=_transmision,
             )
         _agregar_resumen_lote_al_log(st.session_state.get("_aws_lote_resultados", []))
         st.rerun()
@@ -848,16 +869,17 @@ def _render_tab_directa():
 
 
 def _render_historial_cargas_directas():
-    historial = _leer_cargas_directas()
+    historial = leer_cargas_directas()
     if historial:
         with st.expander(f"Historial de cargas directas ({len(historial)})", icon=MI_INFO, expanded=False):
             for reg in reversed(historial[-20:]):
                 icono = ICON_OK if reg.get("ok") else ICON_ERROR
                 ref = f" — {reg['referencia']}" if reg.get("referencia") else ""
                 fecha = (reg.get("en") or "")[:16].replace("T", " ")
+                _transmision_txt = f" · transmisión: {reg['transmision']}" if reg.get("tipo") == "udz" and reg.get("transmision", "-") != "-" else ""
                 st.caption(
                     f"{icono} {fecha} · {reg.get('tipo','').upper()} → {reg.get('ambiente','').upper()} · "
-                    f"{reg.get('por','')} · {reg.get('archivo_original','')}{ref}"
+                    f"{reg.get('por','')} · {reg.get('archivo_original','')}{_transmision_txt}{ref}"
                 )
 
 

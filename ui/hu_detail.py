@@ -887,19 +887,24 @@ def render_hu_detail(resultados, sprint_activo):
                      na=ls_na, campo="AID...LAST_STEP", valor_ok=(", ".join(ls_vals) if ls_vals else None))
 
             copiar_vals = oz_info.get("copiar_vals", [])
+            out_zones_vals = oz_info.get("out_zones", [])
+            _oz_present_ok = oz_info.get("out_zone_ok", False)
             def _oz_detail():
                 st.markdown("**copiarResultadoBucket encontrado en AID:**")
                 st.code(", ".join(copiar_vals) if copiar_vals else "(no encontrado)", language="text")
-                st.markdown("**Regla:** `copiarResultadoBucket` siempre debe ser `true` (out_zone no forma parte de la regla)")
-                if not copiar_vals:
+                st.markdown("**Regla:** `copiarResultadoBucket` siempre debe ser `true`, y `out_zone` NO debe existir en el AID")
+                if not _oz_present_ok:
+                    st.error(f"{ICON_ERROR} **out_zone encontrado en AID (no debe existir): {', '.join(out_zones_vals)}**")
+                    st.info('**Quitar en AID** → dentro de STEP_VARIABLES, eliminar la clave `out_zone`')
+                elif not copiar_vals:
                     st.error(f"{ICON_ERROR} **copiarResultadoBucket no encontrado**")
                     st.info('**Agregar en AID** → dentro de STEP_VARIABLES:\n```json\n"copiarResultadoBucket": "true"\n```')
                 else:
                     st.error(f"{ICON_ERROR} **copiarResultadoBucket no es true en {sum(1 for v in copiar_vals if str(v).lower() != 'true')} de {len(copiar_vals)} ocurrencia(s)**")
                     st.info('**Cambiar en AID** → `Ctrl+F: copiarResultadoBucket`\n```json\n"copiarResultadoBucket": "true"\n```')
-            val_card(oz_ok, "copiarResultadoBucket = true", _f_aid,
-                     "copiarResultadoBucket siempre debe ser true cuando hay un step call_api con STEP_VARIABLES", _oz_detail, na=oz_na,
-                     campo="AID...STEP_VARIABLES.copiarResultadoBucket", valor_ok=(copiar_vals[0] if copiar_vals else None))
+            val_card(oz_ok, "copiarResultadoBucket = true, sin out_zone", _f_aid,
+                     "copiarResultadoBucket siempre debe ser true, y out_zone no debe existir en el AID", _oz_detail, na=oz_na,
+                     campo="AID...STEP_VARIABLES.copiarResultadoBucket / out_zone", valor_ok=(copiar_vals[0] if copiar_vals else None))
 
             #  Grupo UDZ
             val_group("UDZ — eventos", anchor="val-grupo-udz", n_err_grupo=_tallies_grupo.get("val-grupo-udz", {}).get("err", 0))

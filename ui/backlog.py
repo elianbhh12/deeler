@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from core.config import ROOT_FOLDER, ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, ESTADO_LISTO, ESTADO_ERROR, MI_FOLDER, MI_ERROR, MI_SEARCH, MI_INFO
-from core.analysis import get_estado_code, obtener_estado_pdn_real
+from core.analysis import get_estado_code, obtener_estado_pdn_real, obtener_estado_qa_real
 
 
 def render_excel_card():
@@ -114,6 +114,12 @@ def render_tabla_resumen(resultados):
         else:
             desplegado_badge = ICON_NA
 
+        _qa_real = obtener_estado_qa_real(r)
+        if _qa_real["desplegado"]:
+            desplegado_qa_badge = f"{ICON_OK} {(_qa_real['en'] or '')[:10]}"
+        else:
+            desplegado_qa_badge = ICON_NA
+
         # Agregar fecha descarga para referencia
         downloaded_at = r.get("downloaded_at", "")
         fecha_str = f"{downloaded_at[:10]} {downloaded_at[11:19]}" if downloaded_at else "?"
@@ -129,6 +135,7 @@ def render_tabla_resumen(resultados):
             "AID": aid_ok,
             "UDZ": udz_ok,
             "Validación": _est_short,
+            "Desplegado QA": desplegado_qa_badge,
             "Desplegado PDN": desplegado_badge,
         })
 
@@ -148,7 +155,7 @@ def render_tabla_resumen(resultados):
                 return "background-color:#F5F5F4;color:#78716C"
             return ""
 
-        _estilo = df_tabla.style.map(_color_celda, subset=["RNF", "TA", "AID", "UDZ", "Validación", "Desplegado PDN"])
+        _estilo = df_tabla.style.map(_color_celda, subset=["RNF", "TA", "AID", "UDZ", "Validación", "Desplegado QA", "Desplegado PDN"])
         st.dataframe(
             _estilo, width='stretch', hide_index=True,
             column_config={"Título": st.column_config.TextColumn("Título", width="large")},

@@ -4,8 +4,9 @@ from pathlib import Path
 import streamlit as st
 
 from core.config import ROOT_FOLDER, ESTADO_LISTO, ESTADO_ERROR, ESTADO_INCOMPLETO, ESTADO_SIN_METADATA, MI_WARNING
-from core.analysis import cargar_json, get_estado_code, obtener_estado_pdn_real
+from core.analysis import cargar_json, get_estado_code, obtener_estado_pdn_real, cargar_todos_los_sprints
 from core.reports import generar_excel_consolidado
+from ui.aws_console import leer_cargas_directas
 
 
 def cargar_resultados():
@@ -55,10 +56,19 @@ def render_kpis_y_progreso(resultados):
     sin_arch    = sum(1 for r in resultados if get_estado_code(r) in (ESTADO_INCOMPLETO, ESTADO_SIN_METADATA))
     errores_total = errores + sin_arch
 
-    backlog_folder = Path("Backlog_Dealer")
     if st.session_state.get("_excel_pending"):
         try:
-            generar_excel_consolidado(resultados, guardar_en_carpeta=backlog_folder)
+            # Se arma con TODAS las HU de TODOS los sprints en ROOT_FOLDER, no
+            # solo las de la sesión actual — así no se "resetea" al analizar
+            # un sprint nuevo (session_state["resultados"] se reemplaza por
+            # completo en ese momento, pero el registro histórico en disco
+            # sigue intacto). Se guarda en ROOT_FOLDER, no en una ruta relativa
+            # fija, para que quede junto a los datos reales sin importar cómo
+            # esté configurado ROOT_FOLDER.
+            generar_excel_consolidado(
+                cargar_todos_los_sprints(ROOT_FOLDER), guardar_en_carpeta=Path(ROOT_FOLDER),
+                cargas_directas=leer_cargas_directas(),
+            )
         except Exception as e:
             st.toast(f"No se pudo actualizar el Excel consolidado: {e}", icon=MI_WARNING)
         st.session_state["_excel_pending"] = False
