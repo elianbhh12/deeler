@@ -627,6 +627,26 @@ def test_udz_crudos_bien_configurado_sigue_dando_ok(appmod, tmp_path):
     assert r["validaciones"]["udz_transmisiones"]["ok"] is True
 
 
+#  Regresión: leer_campo_udz debe caer a la raíz del JSON cuando el UDZ trae
+#  un "item" que no incluye el campo buscado — antes clasificar_udz_desde_json
+#  (y cada función que leía UDZ) descartaba la raíz entera apenas veía un
+#  "item", así que un campo que solo estuviera fuera de "item" no se detectaba.
+
+def test_leer_campo_udz_cae_a_la_raiz_si_item_no_trae_el_campo(appmod):
+    udz = {"item": {"id": "aid-x"}, "require_transmission": "true"}
+    assert appmod.leer_campo_udz(udz, "require_transmission") == "true"
+
+
+def test_leer_campo_udz_prioriza_item_sobre_la_raiz(appmod):
+    udz = {"item": {"require_transmission": "true"}, "require_transmission": "false"}
+    assert appmod.leer_campo_udz(udz, "require_transmission") == "true"
+
+
+def test_clasificar_udz_detecta_transmision_cuando_solo_esta_fuera_de_item(appmod):
+    udz = {"item": {"id": "aid-x"}, "require_transmission": "true"}
+    assert appmod.clasificar_udz_desde_json(udz) == "RESULTADOS"
+
+
 def test_udz_no_clasificable_en_despliegue_da_error(appmod, tmp_path):
     """Un UDZ presente pero que no se puede clasificar ni por s3_path
     ('crudos'/'resultados') ni por require_transmission=true queda

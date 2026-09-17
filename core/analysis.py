@@ -171,13 +171,29 @@ def inferir_tipo_config(data) -> str:
     return "desconocido"
 
 
+def leer_campo_udz(udz_data: dict, campo: str):
+    """Lee un campo de un JSON de UDZ con el mismo criterio en todo el
+    proyecto: si el UDZ viene envuelto en "item", ese valor manda; si el
+    campo no está ahí (item no lo trae, o no hay "item"), se cae al mismo
+    campo en la raíz del JSON. Antes cada función que leía UDZ (clasificación,
+    validaciones cruzadas, Excel, carga directa) tenía su propia variante de
+    este fallback y podían divergir — un UDZ con "item" que no traía
+    require_transmission (estando el campo solo en la raíz) se detectaba en
+    unos lados y en otros no. Devuelve None si no está en ninguno de los dos."""
+    if not isinstance(udz_data, dict):
+        return None
+    item = udz_data.get("item")
+    if isinstance(item, dict) and item.get(campo) is not None:
+        return item.get(campo)
+    return udz_data.get(campo)
+
+
 def clasificar_udz_desde_json(udz_data: dict) -> str:
     """Clasifica UDZ en RESULTADOS o CRUDOS según flags y s3_path."""
     if not isinstance(udz_data, dict):
         return "DESCONOCIDO"
-    item = udz_data.get("item") if isinstance(udz_data.get("item"), dict) else udz_data
-    req = str(item.get("require_transmission", "")).strip().lower() == "true"
-    s3_path = str(item.get("s3_path", "")).lower()
+    req = str(leer_campo_udz(udz_data, "require_transmission") or "").strip().lower() == "true"
+    s3_path = str(leer_campo_udz(udz_data, "s3_path") or "").lower()
     if req or "resultados" in s3_path:
         return "RESULTADOS"
     if "crudos" in s3_path:
@@ -358,16 +374,10 @@ def _validar_udz_cruzadas(aid: dict, wf: str, aid_s3: str, udz: dict, es_desplie
     workflow_vs_id, ambiente_workflow_id, udz_transmisiones). Se corre tanto
     sobre el UDZ activo como sobre el otro archivo cuando la HU trae
     crudos y resultados por separado, para poder subir los dos a AWS."""
-    _udz_item = udz.get("item") if udz else None
-    _udz_root = udz if isinstance(udz, dict) else {}
-    udz_s3 = (_udz_item.get("s3_path", "") if isinstance(_udz_item, dict) else "") or _udz_root.get("s3_path", "")
-    udz_require_transmission = (_udz_item.get("require_transmission") if isinstance(_udz_item, dict) else None)
-    if udz_require_transmission is None:
-        udz_require_transmission = _udz_root.get("require_transmission")
-    udz_emit_event = (_udz_item.get("emit_event") if isinstance(_udz_item, dict) else None)
-    if udz_emit_event is None:
-        udz_emit_event = _udz_root.get("emit_event")
-    udz_id = (_udz_item.get("id", "") if isinstance(_udz_item, dict) else "") or _udz_root.get("id", "")
+    udz_s3 = leer_campo_udz(udz, "s3_path") or ""
+    udz_require_transmission = leer_campo_udz(udz, "require_transmission")
+    udz_emit_event = leer_campo_udz(udz, "emit_event")
+    udz_id = leer_campo_udz(udz, "id") or ""
 
     # s3_path: CRUDOS exige ruta idéntica a AID; RESULTADOS exige la misma
     # ruta con "crudos" -> "resultados".

@@ -15,7 +15,7 @@ from openpyxl.utils import get_column_letter
 import json
 
 from .config import ICON_SUCCESS, ICON_FAIL, ACCENT, INK, GREEN, RED, MUTED
-from .analysis import obtener_estado_pdn_real
+from .analysis import obtener_estado_pdn_real, leer_campo_udz
 
 #  Colores del reporte — mismos que usa la app (sin el "#"), no un set aparte.
 _C_ACCENT = ACCENT.lstrip("#")   # amarillo banco — fondo de encabezado
@@ -127,9 +127,10 @@ def _nombre_subtipo_aid(r: dict) -> str:
 
 
 def _leer_udz_activo(r: dict):
-    """Lee el UDZ activo de esta HU directo del disco, igual que
-    _leer_aid_activo — algunos UDZ envuelven sus campos en un objeto
-    "item", así que se devuelve ya "desenvuelto"."""
+    """Lee el UDZ activo de esta HU directo del disco (dict crudo, tal cual
+    quedó en el archivo — el desenvuelto de "item" lo hace
+    core.analysis.leer_campo_udz al leer cada campo, con su mismo fallback
+    a la raíz en todo el proyecto)."""
     udz_path = r.get("udz_activo")
     if not udz_path:
         return None
@@ -137,17 +138,14 @@ def _leer_udz_activo(r: dict):
         udz_data = json.loads(Path(udz_path).read_text(encoding="utf-8"))
     except Exception:
         return None
-    if not isinstance(udz_data, dict):
-        return None
-    item = udz_data.get("item")
-    return item if isinstance(item, dict) else udz_data
+    return udz_data if isinstance(udz_data, dict) else None
 
 
 def _udz_necesita_transmision(r: dict) -> str:
     """Sí/No según require_transmission del UDZ activo, leído del archivo
     actual en disco — "-" si no hay UDZ o no se pudo determinar."""
     udz_data = _leer_udz_activo(r)
-    val = str(udz_data.get("require_transmission", "")).strip().lower() if udz_data else ""
+    val = str(leer_campo_udz(udz_data, "require_transmission") or "").strip().lower() if udz_data else ""
     if val == "true":
         return "Sí"
     if val == "false":

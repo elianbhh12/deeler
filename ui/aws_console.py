@@ -17,7 +17,7 @@ from pathlib import Path
 import streamlit as st
 
 from core.config import ICON_OK, ICON_ERROR, ICON_WARNING, ICON_NA, MI_CLOUD, MI_INFO, MI_REFRESH, MI_SETTINGS, MI_OK, MI_ERROR, MI_SEARCH, AWS_TABLAS, AWS_CRED_FILE, ROOT_FOLDER, CARGAS_DIRECTAS_DIR
-from core.analysis import _val_ok, analizar_hu, clasificar_udz_desde_json, detectar_ambiente, detectar_slots_udz, normalizar_s3, obtener_estado_pdn_real
+from core.analysis import _val_ok, analizar_hu, clasificar_udz_desde_json, detectar_ambiente, detectar_slots_udz, normalizar_s3, obtener_estado_pdn_real, obtener_estado_qa_real, leer_campo_udz
 from core.aws_upload import subir_componente, verificar_en_tabla
 from core.utils import obtener_usuario_actual, safe_name
 
@@ -146,13 +146,14 @@ def _validar_cruce_flujo(items: list) -> dict:
 
 def _requiere_transmision_desde_texto(texto: str) -> str:
     """Sí/No según require_transmission del UDZ, para el registro de
-    auditoría — "-" si no se pudo determinar (JSON inválido o campo ausente)."""
+    auditoría — "-" si no se pudo determinar (JSON inválido o campo ausente).
+    Mismo criterio que core.analysis.leer_campo_udz (item primero, con
+    fallback a la raíz) en vez de una variante propia."""
     try:
         data = json.loads(texto)
     except Exception:
         return "-"
-    item = data.get("item") if isinstance(data, dict) and isinstance(data.get("item"), dict) else data
-    valor = str(item.get("require_transmission", "")).strip().lower() if isinstance(item, dict) else ""
+    valor = str(leer_campo_udz(data, "require_transmission") or "").strip().lower()
     if valor == "true":
         return "Sí"
     if valor == "false":
@@ -1179,13 +1180,19 @@ def _render_tab_masiva(resultados: list):
         "Confirmo que quiero escribir en PRODUCCIÓN (PDN) para todas las HU marcadas — esto no es reversible",
     )
 
-    col_busca_masivo, col_ocultar = st.columns([0.7, 0.3], vertical_alignment="center")
+    col_busca_masivo, col_ocultar_qa, col_ocultar_pdn = st.columns([0.5, 0.25, 0.25], vertical_alignment="center")
     with col_busca_masivo:
         _busqueda_masivo = st.text_input(
             "Buscar", placeholder="Buscar por ID o palabra del título...",
             label_visibility="collapsed", key="aws_masivo_busqueda", icon=MI_SEARCH,
         )
-    with col_ocultar:
+    with col_ocultar_qa:
+        _ocultar_en_qa = st.checkbox(
+            "Ocultar ya desplegadas en QA", value=True, key="aws_masivo_ocultar_qa",
+            disabled=ambiente != "qa",
+            help=None if ambiente == "qa" else "Solo aplica cuando el ambiente destino es QA.",
+        )
+    with col_ocultar_pdn:
         _ocultar_en_pdn = st.checkbox(
             "Ocultar ya desplegadas en PDN", value=True, key="aws_masivo_ocultar_pdn",
             disabled=ambiente != "pdn",
@@ -1198,8 +1205,11 @@ def _render_tab_masiva(resultados: list):
             r for r in resultados_desplegable
             if _q_masivo in str(r.get("hu_id", "")).lower() or _q_masivo in r.get("hu_title", "").lower()
         ]
-    # El filtro de "ya en PDN" solo tiene sentido para evitar re-subir a PDN
-    # de nuevo — si el destino es QA, ocultarlas dejaría sin poder subirlas.
+    # Cada filtro de "ya desplegada" solo tiene sentido para evitar re-subir
+    # al MISMO ambiente destino — si el destino es el otro, ocultarlas
+    # dejaría sin poder subirlas ahí.
+    if _ocultar_en_qa and ambiente == "qa":
+        resultados_desplegable = [r for r in resultados_desplegable if not obtener_estado_qa_real(r)["desplegado"]]
     if _ocultar_en_pdn and ambiente == "pdn":
         resultados_desplegable = [r for r in resultados_desplegable if not obtener_estado_pdn_real(r)["desplegado"]]
 
@@ -1232,14 +1242,33 @@ def _render_tab_masiva(resultados: list):
     _listas = [c for c in _candidatas if c["todo_listo"]]
     if not _listas:
         st.info(f"Ninguna HU está 100% lista para subir a {ambiente.upper()} todavía.", icon=MI_INFO)
+    else:
+        col_sel_todo, col_sel_nada, col_sel_info = st.columns([0.25, 0.25, 0.5], vertical_alignment="center")
+        with col_sel_todo:
+            if st.button("Seleccionar todas", key=f"aws_masivo_sel_todo_{ambiente}", width='stretch', icon=MI_OK):
+                for c in _listas:
+                    _hu_id = c["r"].get("hu_id")
+                    st.session_state[f"aws_masivo_check_{_hu_id}"] = True
+                    st.session_state[f"aws_masivo_check_{_hu_id}_prev_listo"] = True
+                st.rerun()
+        with col_sel_nada:
+            if st.button("Deseleccionar todas", key=f"aws_masivo_sel_nada_{ambiente}", width='stretch'):
+                for c in _listas:
+                    _hu_id = c["r"].get("hu_id")
+                    st.session_state[f"aws_masivo_check_{_hu_id}"] = False
+                    st.session_state[f"aws_masivo_check_{_hu_id}_prev_listo"] = True
+                st.rerun()
+        with col_sel_info:
+            st.caption(f"{len(_listas)} HU listas para {ambiente.upper()}")
 
     seleccion = {}
     for c in sorted(_candidatas, key=lambda c: (not c["todo_listo"], str(c["r"].get("hu_id")))):
         r = c["r"]
         hu_id = r.get("hu_id")
+        _ya_en_qa = " · ✅ ya en QA" if obtener_estado_qa_real(r)["desplegado"] else ""
         _ya_en_pdn = " · ✅ ya en PDN" if obtener_estado_pdn_real(r)["desplegado"] else ""
         _tipo_corto = (r.get("tipo_cambio") or "?")[:4]
-        _label = f"{hu_id} [{_tipo_corto}] — {r.get('hu_title', '')} ({c['n_listos']}/{c['n_total']} listos){_ya_en_pdn}"
+        _label = f"{hu_id} [{_tipo_corto}] — {r.get('hu_title', '')} ({c['n_listos']}/{c['n_total']} listos){_ya_en_qa}{_ya_en_pdn}"
         _key = f"aws_masivo_check_{hu_id}"
         # Streamlit no pisa el valor de un checkbox ya creado con un nuevo
         # "value" en reruns posteriores, así que se resetea manualmente

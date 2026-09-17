@@ -155,6 +155,19 @@ def test_consolidado_udz_con_item_envuelto(tmp_path):
     assert fila["Transmisiones"] == "Sí"
 
 
+def test_consolidado_udz_con_item_sin_el_campo_cae_a_la_raiz(tmp_path):
+    """Si el UDZ trae "item" pero el campo solo está fuera de él, debe
+    detectarse igual (antes se perdía por completo)."""
+    udz_activo = _escribir_udz(tmp_path, item={"id": "aid-x"}, require_transmission="true")
+    resultados = [_resultado_base(udz_activo=udz_activo)]
+    contenido = reports.generar_excel_consolidado(resultados)
+    wb = load_workbook(BytesIO(contenido))
+    ws = wb["Consolidado"]
+    headers = [c.value for c in ws[1]]
+    fila = {headers[i]: c.value for i, c in enumerate(ws[2])}
+    assert fila["Transmisiones"] == "Sí"
+
+
 def test_consolidado_archivo_faltante_muestra_guion():
     resultados = [_resultado_base()]  # sin ta_activo/aid_activo/udz_activo
     contenido = reports.generar_excel_consolidado(resultados)
