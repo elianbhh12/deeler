@@ -1,20 +1,6 @@
-"""
-Pipeline completo (los 6 pasos) como funcion reusable, sin depender de
-argparse ni de print() a stdout -- para que tanto el CLI (`cli.cmd_run_all`)
-como una interfaz grafica (ver ui/inventario.py en el proyecto que integra
-esto con "Despliegues AID") puedan correr exactamente la misma logica sin
-duplicarla.
-
-Extraido de cli.cmd_run_all tal cual estaba, cambiando solo `print()` por
-llamadas a `log()` (por defecto no hace nada; el CLI le pasa `print`, una UI
-le puede pasar algo que escriba en pantalla en vivo).
-
-Nota: el paso original "comparar contra Orden_RE_Base.txt" (new_vs_baseline)
-se sacó del flujo automático -- ese catálogo nunca se llegó a mantener, así
-que siempre mostraba "No calculado". El módulo new_vs_baseline.py y el
-subcomando `validar-nuevos` del CLI siguen disponibles para quien quiera
-usarlos a mano si algún día arman ese catálogo.
-"""
+"""Pipeline completo (6 pasos), reusable por cli.py y ui/inventario.py sin
+duplicar lógica. `new_vs_baseline`/Orden_RE_Base quedó fuera del flujo
+automático (catálogo nunca mantenido); sigue disponible vía CLI."""
 from __future__ import annotations
 
 import logging
@@ -33,9 +19,7 @@ logger = logging.getLogger("pipeline")
 
 @dataclass
 class ResultadoPipeline:
-    """Todo lo que produjo una corrida del pipeline completo, para que quien
-    lo llamo (CLI o UI) decida que hacer (abrir los Excel, mostrar un
-    resumen, etc.) sin tener que volver a leer nada del disco."""
+    """Resultado de una corrida: rutas de los Excel generados + resumen."""
     environment: str
     modo_descarga: str = "incremental"
     resumen: dict = field(default_factory=dict)
@@ -46,9 +30,7 @@ class ResultadoPipeline:
 
 
 def _find_default_reference_dir(table_key: str, environment: str, today: str) -> Optional[Path]:
-    """Igual que cli._find_default_reference_dir -- autodetecta la carpeta
-    de fecha mas reciente ya descargada (distinta a hoy) para usarla como
-    referencia en modo incremental."""
+    """Carpeta de fecha más reciente ya descargada, para modo incremental."""
     import re
 
     date_iso_re = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -85,14 +67,8 @@ def ejecutar_pipeline_completo(
     credenciales_file: Optional[Path] = None,
     log: Callable[[str], None] = lambda _msg: None,
 ) -> ResultadoPipeline:
-    """Corre los 6 pasos del pipeline (descarga -> comparar -> verificar ->
-    agrupar -> actualizar maestro/historial -> generar Excel) para un
-    ambiente, y devuelve las rutas de los Excel generados en vez de abrirlos
-    o imprimir un resumen -- eso lo decide quien llama.
-
-    `log(mensaje)` se llama en cada paso importante; por defecto no hace
-    nada (silencioso), el CLI le pasa `print`, una UI le puede pasar algo
-    que actualice un log en pantalla en vivo."""
+    """Descarga -> comparar -> verificar -> agrupar -> maestro/historial ->
+    Excel. `log(mensaje)` se llama en cada paso (no hace nada por default)."""
     if credenciales_file:
         load_credentials_file(Path(credenciales_file))
 
@@ -119,9 +95,7 @@ def ejecutar_pipeline_completo(
     config_summary = download.download(environment, "config-control", config_reference_dir, segments, profile, date_stamp, max_attempts, completo=completo)
     download.download(environment, "text-analyzer", ta_reference_dir, segments, profile, date_stamp, max_attempts, completo=completo)
 
-    # events-manager (UDZ) solo sirve para la columna "Transmisiones"; si
-    # falla (tabla no existe en este ambiente, sin permiso, etc.) no debe
-    # tumbar el resto del pipeline, solo esa columna queda vacia.
+    # events-manager solo alimenta "Transmisiones"; si falla no tumba el resto.
     resultados_basenames: Optional[set] = None
     try:
         download.download(environment, "events-manager", events_reference_dir, segments, profile, date_stamp, max_attempts, completo=completo)
@@ -155,10 +129,7 @@ def ejecutar_pipeline_completo(
     log(f"=== Paso 5/6: actualizando el maestro global del ambiente (modo {modo_descarga}) ===")
     filas_actuales = group_report.snapshot_rows(r3_dir, detalle_csv, resultados_basenames)
     historial_resumen = historial.actualizar(environment, filas_actuales, modo=modo_descarga)
-    # Los R2 se acumulan en su propio namespace de historial (mismo módulo,
-    # otra "carpeta de ambiente" — "<ambiente>__r2"), separado de los R3, así
-    # no se pierden entre corridas como pasaba antes (solo vivían en el
-    # reporte_completo.xlsx de esa corrida puntual).
+    # R2 se acumula aparte (namespace "<ambiente>__r2"), no solo en el reporte puntual.
     historial.actualizar(f"{environment}__r2", r2_rows, modo=modo_descarga)
     r2_maestro = historial.flujos_presentes(f"{environment}__r2")
     if any(historial_resumen.values()):

@@ -172,14 +172,7 @@ def inferir_tipo_config(data) -> str:
 
 
 def leer_campo_udz(udz_data: dict, campo: str):
-    """Lee un campo de un JSON de UDZ con el mismo criterio en todo el
-    proyecto: si el UDZ viene envuelto en "item", ese valor manda; si el
-    campo no está ahí (item no lo trae, o no hay "item"), se cae al mismo
-    campo en la raíz del JSON. Antes cada función que leía UDZ (clasificación,
-    validaciones cruzadas, Excel, carga directa) tenía su propia variante de
-    este fallback y podían divergir — un UDZ con "item" que no traía
-    require_transmission (estando el campo solo en la raíz) se detectaba en
-    unos lados y en otros no. Devuelve None si no está en ninguno de los dos."""
+    """Lee un campo de UDZ: prioriza "item", cae a la raíz si no está ahí."""
     if not isinstance(udz_data, dict):
         return None
     item = udz_data.get("item")
@@ -235,12 +228,8 @@ def detectar_slots_udz(r: dict) -> list:
 
 
 def _obtener_estado_ambiente_real(r: dict, ambiente: str) -> dict:
-    """Si la HU realmente quedó desplegada en `ambiente` (qa/pdn): TODOS sus
-    componentes presentes (TA/AID/UDZ, incluyendo ambos slots si hay
-    crudos+resultados separados) ya se subieron con éxito a esa tabla.
-
-    Devuelve {"desplegado": bool, "por": str|None, "en": str|None} de la
-    última subida entre los componentes."""
+    """True si TODOS los componentes presentes ya se subieron a `ambiente`.
+    Devuelve {"desplegado", "por", "en"} de la última subida."""
     componentes = []
     if r.get("ta_activo"):
         componentes.append("ta")
@@ -281,11 +270,7 @@ def obtener_estado_pdn_real(r: dict) -> dict:
 
 
 def obtener_estado_qa_real(r: dict) -> dict:
-    """Análogo a obtener_estado_pdn_real pero para QA — mismo criterio:
-    TODOS los componentes presentes de la HU deben tener su registro de
-    subida a QA. Pensado para cuando la subida a PDN se hace por otra vía y
-    acá solo se sube a QA, pero igual se quiere un registro/validación
-    equivalente al de PDN sin perder nada de lo que ya existe para PDN."""
+    """Análogo a obtener_estado_pdn_real pero para QA."""
     return _obtener_estado_ambiente_real(r, "qa")
 
 
@@ -748,17 +733,11 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
                     if out_z:
                         out_zones.append(out_z)
 
-                    # out_zone solo es un problema si está en el MISMO
-                    # STEP_VARIABLES (mismo job/step de call_api) que
-                    # copiarResultadoBucket — en otro job/step, sin
-                    # copiarResultadoBucket, puede existir sin conflicto.
+                    # out_zone solo es error si está en el mismo step que copiarResultadoBucket.
                     if copiar and out_z:
                         conflictos.append(f"copiarResultadoBucket={copiar} con out_zone={out_z} en el mismo step")
 
-                # Recursivo — salvo el propio STEP_VARIABLES ya procesado
-                # arriba: recursar en él de nuevo lo vuelve a matchear por la
-                # rama "es_bare" (ese mismo dict tiene copiarResultadoBucket +
-                # out_zone directo), duplicando el conflicto.
+                # No recursar en el STEP_VARIABLES ya procesado (evita duplicar el conflicto).
                 for k, v in obj.items():
                     if es_wrapper and k == "STEP_VARIABLES":
                         continue
@@ -769,9 +748,7 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
 
         validar_step_vars(aid)
 
-    # Regla: copiarResultadoBucket siempre debe ser true (cuando aplica), y
-    # out_zone no puede estar en el MISMO step (STEP_VARIABLES) que
-    # copiarResultadoBucket — en otro job/step distinto sí puede existir.
+    # copiarResultadoBucket siempre true; out_zone no puede compartir step con él.
     if aid and tiene_call_api_con_step_vars:
         tiene_copiar    = len(copiar_vals) > 0
         copiar_es_true  = all(str(v).lower() == "true" for v in copiar_vals) if copiar_vals else False
@@ -909,12 +886,8 @@ def analizar_sprint(sprint_folder: Path) -> list:
 
 
 def cargar_todos_los_sprints(root_folder) -> list:
-    """Lee (sin re-analizar) el analisis_tecnico.json ya guardado de CADA HU
-    de TODOS los sprints que haya en ROOT_FOLDER, no solo el sprint cargado
-    en la sesión actual — para que el Excel consolidado sea un registro
-    histórico real y no se resetee cada vez que se analiza un sprint nuevo
-    (session_state["resultados"] se reemplaza por completo en ese momento,
-    pero los análisis de los sprints anteriores siguen intactos en disco)."""
+    """Lee el analisis_tecnico.json de CADA HU de TODOS los sprints en
+    ROOT_FOLDER (no solo el sprint activo), para el Excel consolidado."""
     root = Path(root_folder)
     if not root.exists():
         return []

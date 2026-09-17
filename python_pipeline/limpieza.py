@@ -1,15 +1,5 @@
-"""
-Limpieza de descargas/ -- los JSON crudos que trae cada corrida
-(descargas/<tabla>/<ambiente>/<fecha>/) no se borran nunca solos, así que
-con uso diario crecen sin límite. Lo que importa de verdad ya queda
-resumido en maestro_<ambiente>.xlsx / historial/ (ver historial.py), así que
-borrar una carpeta de fecha vieja de descargas/ no pierde información real.
-
-A propósito NO se ejecuta automáticamente en el pipeline: es una limpieza
-manual, con un número de días configurable, para que sea la persona la que
-decide cuándo (y no un borrado silencioso que sorprenda a alguien
-investigando algo de hace 3 semanas).
-"""
+"""Limpieza manual de descargas/<tabla>/<ambiente>/<fecha>/ -- no corre sola
+en el pipeline. Lo resumido ya vive en maestro_<ambiente>.xlsx/historial/."""
 from __future__ import annotations
 
 import logging
@@ -46,8 +36,6 @@ def _tamano_carpeta(path: Path) -> int:
 
 
 def _carpetas_de_fecha() -> List[Path]:
-    """Todas las carpetas descargas/<tabla>/<ambiente>/<fecha>/ que existan,
-    sin importar tabla ni ambiente."""
     if not config.DESCARGAS_DIR.is_dir():
         return []
     carpetas = []
@@ -64,8 +52,6 @@ def _carpetas_de_fecha() -> List[Path]:
 
 
 def medir_descargas() -> ResumenDescargas:
-    """Cuánto ocupa descargas/ hoy -- para mostrar antes de decidir si vale
-    la pena limpiar."""
     carpetas = _carpetas_de_fecha()
     return ResumenDescargas(
         carpetas_de_fecha=len(carpetas),
@@ -74,14 +60,7 @@ def medir_descargas() -> ResumenDescargas:
 
 
 def limpiar_descargas_viejas(dias_retener: int = 30, dry_run: bool = False) -> dict:
-    """Borra las carpetas descargas/<tabla>/<ambiente>/<fecha>/ con fecha
-    anterior a hoy - dias_retener. No toca reportes/, historial/ ni
-    referencias/ -- esos son los que en realidad importan a largo plazo.
-
-    dry_run=True: no borra nada, solo devuelve qué borraría (para mostrar
-    una confirmación antes del botón real).
-
-    Devuelve {"borradas": [...], "bytes_liberados": int, "conservadas": int}."""
+    """dry_run=True: no borra nada, solo devuelve qué borraría."""
     corte = datetime.now() - timedelta(days=dias_retener)
     borradas: List[str] = []
     bytes_liberados = 0
@@ -91,9 +70,7 @@ def limpiar_descargas_viejas(dias_retener: int = 30, dry_run: bool = False) -> d
         try:
             fecha = datetime.strptime(fecha_dir.name, config.DATE_FORMAT)
         except ValueError:
-            # Nombre de carpeta que no es una fecha reconocible (formato
-            # legacy, o algo puesto a mano) -- no se toca, mejor pecar de
-            # conservador que borrar algo que no se entiende.
+            # Nombre de carpeta que no es una fecha -- no se toca.
             conservadas += 1
             continue
 

@@ -1,14 +1,5 @@
-"""Pestaña "Extracción / Inventario": interfaz Streamlit sobre
-python_pipeline/ (traído del proyecto hermano "flujosscript") — descarga e
-inventaría config-control, text-analyzer y events-manager (UDZ) desde
-DynamoDB, y entrega los Excel de inventario (reporte de la corrida, maestro
-acumulado, matriz de ambientes, historial de cambios).
-
-No comparte credenciales ni tablas con "Despliegues AID" (ui/aws_console.py)
-— son dos herramientas independientes que conviven en la misma app; ver
-core.config.PIPELINE_CRED_FILE. La estética (tarjetas KPI, consola oscura de
-log) reusa las mismas clases CSS que ya usa el resto de la app (ver
-ui/styles.py) para que se sienta como una sección más, no un tool aparte."""
+"""Pestaña "Extracción / Inventario": UI sobre python_pipeline/. No comparte
+credenciales ni tablas con "Despliegues AID" (ver PIPELINE_CRED_FILE)."""
 import html
 import json
 import re
@@ -30,9 +21,7 @@ _LOG_SESSION_KEY = "inv_log_lineas"
 
 
 def _render_panel_credenciales():
-    """Mismo patrón que ui/aws_console.py::_render_panel_credenciales, pero
-    en un archivo separado (PIPELINE_CRED_FILE) porque estas credenciales
-    apuntan a otras tablas DynamoDB y pueden tener otros permisos."""
+    """Mismo patrón que ui/aws_console.py, pero en PIPELINE_CRED_FILE."""
     _ruta = Path(PIPELINE_CRED_FILE)
     _existe = _ruta.exists()
     _estado_txt = (
@@ -65,11 +54,7 @@ def _render_panel_credenciales():
 
 
 def _render_panel_mantenimiento():
-    """descargas/ (los JSON crudos de cada corrida) no se borra nunca solo
-    -- lo que importa de verdad ya queda resumido en el maestro/historial
-    acumulado (ver python_pipeline/limpieza.py). Esto es manual a propósito:
-    la persona elige cuántos días conservar y confirma antes de borrar,
-    nunca se borra nada solo."""
+    """Limpieza manual de descargas/ viejas (ver python_pipeline/limpieza.py)."""
     resumen = medir_descargas()
     _titulo = f"Mantenimiento de disco — descargas/ ocupa {resumen.mb_totales} MB en {resumen.carpetas_de_fecha} carpetas"
     with st.expander(_titulo, icon=MI_CLEAN, expanded=False):
@@ -106,16 +91,12 @@ def _render_panel_mantenimiento():
 
 _PASO_RE = re.compile(r"^===\s*Paso (\d+)/(\d+):\s*(.+?)\s*===$")
 
-# Etiquetas cortas para el stepper — en el mismo orden que los "Paso N/6" que
-# emite pipeline_service.py (ver ejecutar_pipeline_completo).
+# Mismo orden que los "Paso N/6" de pipeline_service.py.
 _PASOS_LABELS = ["Descargar", "Comparar TA", "Subtipos", "Agrupar", "Maestro", "Excel"]
 
 
 def _stepper_html(paso_actual: int, terminado: bool = False) -> str:
-    """Reusa .pipeline-stepper/.pipeline-step (definidas en styles.py para
-    el flujo de "Despliegues AID" pero sin usar todavía en ningún lado) para
-    mostrar en qué paso de los 6 va la corrida — antes solo se sabía leyendo
-    el log de texto línea por línea."""
+    """Reusa .pipeline-stepper/.pipeline-step de styles.py."""
     chips = []
     for i, label in enumerate(_PASOS_LABELS, start=1):
         if terminado or i < paso_actual:
@@ -131,10 +112,7 @@ def _stepper_html(paso_actual: int, terminado: bool = False) -> str:
 
 
 def _consola_html(log_lineas: list) -> str:
-    """Mismo look de "consola oscura" que ya usa Subir a AWS (clases
-    .aws-console-*, reusadas tal cual) — así el log del pipeline se siente
-    parte de la misma app, no un widget suelto. Los "=== Paso N/6 ===" del
-    log se resaltan como separadores; "No se pudo"/"omite" como aviso."""
+    """Consola oscura (clases .aws-console-* de Subir a AWS)."""
     if not log_lineas:
         return """
         <div class="aws-console-wrap">
@@ -179,8 +157,7 @@ def _consola_html(log_lineas: list) -> str:
 
 
 def _paso_actual_desde_log(log_lineas: list) -> int:
-    """Último "Paso N/6" visto en el log — para pintar el stepper en vivo
-    mientras corre, sin tener que llevar un contador aparte."""
+    """Último "Paso N/6" visto en el log."""
     actual = 0
     for linea in log_lineas:
         m = _PASO_RE.match(linea.strip())
@@ -207,10 +184,6 @@ def _stat(icon: str, clase: str, valor, label: str) -> str:
 
 
 def _render_resumen(resumen: dict, modo_descarga: str, ambiente: str):
-    """El dato más importante es cuántos flujos hay en total — hero number
-    arriba de todo, dentro de una tarjeta propia. El resto son tarjetas de
-    estadística chicas con ícono y color según si necesitan atención o no
-    (verde = ok, naranja = revisar, morado = neutral/informativo)."""
     total_r3 = resumen.get("R3 analizados", "-")
     sin_match = resumen.get("R3 sin Text Analyzer (revisar)", 0) or 0
     repetidos = resumen.get("Subtipos de documento repetidos", 0) or 0
@@ -219,12 +192,7 @@ def _render_resumen(resumen: dict, modo_descarga: str, ambiente: str):
     cambiaron = resumen.get("Cambiaron vs corrida anterior", "-")
     r2_total = resumen.get("Items en R2 (no procesados en el reporte agrupado)", "-")
 
-    # "Eliminados" solo se calcula en modo completo (compara TODO lo que hay
-    # hoy contra lo que había antes) — en modo incremental, que un flujo no
-    # aparezca en la descarga de hoy no significa que se haya borrado, así
-    # que mostrar "0" ahí sería engañoso (parece "no se borró nada" cuando
-    # en realidad "no se revisó"). Corré modo "completo" de vez en cuando
-    # para que este dato sea real.
+    # Solo confiable en modo completo -- en incremental sería un "0" engañoso.
     eliminados_valor = resumen.get("Eliminados vs corrida anterior", "-")
     eliminados_txt = str(eliminados_valor) if modo_descarga == "completo" else "N/D"
     run_tag = resumen.get("Fecha de la corrida", "")
@@ -305,28 +273,41 @@ def render_inventario():
 
     if _clic_ejecutar:
         st.session_state[_LOG_SESSION_KEY] = []
-        _log_placeholder = st.empty()
-        _log_placeholder.markdown(_render_progreso([]), unsafe_allow_html=True)
 
-        def _log(mensaje: str) -> None:
-            for _linea in mensaje.splitlines():
-                st.session_state[_LOG_SESSION_KEY].append(_linea)
-            _log_placeholder.markdown(_render_progreso(st.session_state[_LOG_SESSION_KEY]), unsafe_allow_html=True)
+        # st.status: el título se actualiza en vivo con el paso actual.
+        with st.status(f"Iniciando pipeline en {ambiente.upper()}...", expanded=True) as status:
+            _log_placeholder = st.empty()
+            _log_placeholder.markdown(_render_progreso([]), unsafe_allow_html=True)
 
-        try:
-            with st.spinner(f"Corriendo pipeline completo en {ambiente.upper()}..."):
+            def _log(mensaje: str) -> None:
+                for _linea in mensaje.splitlines():
+                    st.session_state[_LOG_SESSION_KEY].append(_linea)
+                lineas = st.session_state[_LOG_SESSION_KEY]
+                _log_placeholder.markdown(_render_progreso(lineas), unsafe_allow_html=True)
+                _paso = _paso_actual_desde_log(lineas)
+                if _paso:
+                    status.update(label=f"Paso {_paso}/{len(_PASOS_LABELS)} — {_PASOS_LABELS[_paso - 1]}...")
+
+            try:
                 resultado = ejecutar_pipeline_completo(
                     environment=ambiente, modo_descarga=modo_descarga,
                     credenciales_file=Path(PIPELINE_CRED_FILE), log=_log,
                 )
-        except (CredentialsError, TableNotFoundError) as exc:
-            st.error(str(exc), icon=MI_ERROR)
-            return
-        except Exception as exc:
-            st.error(f"Error inesperado corriendo el pipeline: {exc}", icon=MI_ERROR)
-            return
+            except (CredentialsError, TableNotFoundError) as exc:
+                status.update(label="Error de credenciales o tabla", state="error")
+                st.error(str(exc), icon=MI_ERROR)
+                return
+            except Exception as exc:
+                status.update(label="Error inesperado", state="error")
+                st.error(f"Error inesperado corriendo el pipeline: {exc}", icon=MI_ERROR)
+                return
 
-        _log_placeholder.markdown(_render_progreso(st.session_state[_LOG_SESSION_KEY], terminado=bool(resultado.resumen)), unsafe_allow_html=True)
+            _log_placeholder.markdown(_render_progreso(st.session_state[_LOG_SESSION_KEY], terminado=bool(resultado.resumen)), unsafe_allow_html=True)
+            status.update(
+                label=f"Pipeline completo en {ambiente.upper()}" if resultado.resumen else f"Terminó sin generar Excel en {ambiente.upper()}",
+                state="complete",
+            )
+
         st.session_state["inv_ultimo_resultado"] = resultado
     else:
         _terminado = bool(st.session_state.get("inv_ultimo_resultado") and st.session_state["inv_ultimo_resultado"].resumen)
@@ -336,9 +317,11 @@ def render_inventario():
     if not resultado:
         return
     if resultado.environment != ambiente:
-        st.caption(
-            f"{ICON_WARNING} Hay un resultado guardado de {resultado.environment.upper()}, "
-            f"pero no de {ambiente.upper()} — ejecutá el pipeline para este ambiente para verlo acá."
+        st.info(
+            f"Todavía no corriste el pipeline para **{ambiente.upper()}** en esta sesión — el resultado que "
+            f"tenés guardado es de **{resultado.environment.upper()}** (sigue disponible si volvés a ese ambiente). "
+            f"Apretá \"Ejecutar pipeline completo en {ambiente.upper()}\" arriba para verlo acá.",
+            icon=MI_INFO,
         )
         return
 

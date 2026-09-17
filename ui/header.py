@@ -7,7 +7,11 @@ import streamlit as st
 
 def render_header():
     _logo_path = Path(__file__).resolve().parent.parent / "img"
-    _logo_files = list(_logo_path.glob("*")) if _logo_path.exists() else []
+    # .ico queda afuera: es para el acceso directo, no para <img> inline.
+    _logo_files = sorted(
+        f for f in (_logo_path.glob("*") if _logo_path.exists() else [])
+        if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".svg", ".webp")
+    )
     _logo_img_tag = ""
     if _logo_files:
         _lf = _logo_files[0]
@@ -21,10 +25,10 @@ def render_header():
     <div class="app-header">
         <div style="display:flex;align-items:center;gap:14px">{_logo_img_tag}
             <div>
-                <div class="app-header-title">Despliegues AID</div>
-                <div class="app-header-subtitle">Validación técnica automatizada de componentes TA, AID y UDZ</div>
+                <div class="app-header-title">AID - Gestión de Flujos</div>
+                <div class="app-header-subtitle">Despliegues AID y Extracción / Inventario</div>
             </div>
         </div>
-        <div class="app-badge">Gate de calidad · Pre-PDN</div>
+        <div class="app-badge">Plataforma interna</div>
     </div>
     """, unsafe_allow_html=True)

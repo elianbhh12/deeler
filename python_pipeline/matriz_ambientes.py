@@ -41,18 +41,9 @@ def _save(data: Dict[str, dict]) -> None:
 
 
 def actualizar(environment: str, filas_actuales: List[dict], modo: str = "incremental", fecha: str = None) -> Dict[str, dict]:
-    """filas_actuales: lista de dicts con 'file' y 'subtipo' (ver
-    group_report.snapshot_rows). Marca cada flujo como presente en este
-    ambiente hoy.
-
-    Marcar como ausente (sin borrarlo) el resto de los flujos conocidos SOLO
-    tiene sentido en modo "completo": ahí `filas_actuales` sí representa TODO
-    lo que hay hoy en la tabla, así que lo que falta realmente se borró. En
-    modo "incremental", `filas_actuales` solo trae lo NUEVO desde la última
-    descarga (ver download.py/_ScanState.process_item) — casi todo lo
-    conocido no vuelve a aparecer ahí aunque siga existiendo, así que
-    marcarlo como ausente sería un falso "se borró" en cada corrida del día
-    a día (mismo criterio que ya usa historial.actualizar)."""
+    """Marca presentes los flujos de filas_actuales. Solo marca ausentes los
+    que faltan en modo "completo" (en incremental no representa la tabla
+    entera, mismo criterio que historial.actualizar)."""
     fecha = fecha or datetime.now().strftime(config.DATE_FORMAT)
     data = _load()
 

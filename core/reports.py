@@ -83,22 +83,14 @@ def _bandear_filas(ws, primera_fila_datos, ultima_fila):
 
 
 def _nombre_archivo(r: dict, clave: str) -> str:
-    """Nombre del archivo TA/AID activo de esta HU, leído directo del path
-    guardado en r["{ta|aid}_activo"] (no del análisis guardado en
-    analisis_tecnico.json) — "-" si no hay archivo activo para esa clave."""
+    """Nombre del archivo TA/AID activo, leído del path en r["{ta|aid}_activo"]."""
     campo = f"{clave.lower()}_activo"
     val = r.get(campo)
     return Path(val).name if val else "-"
 
 
 def _leer_aid_activo(r: dict):
-    """Lee el AID activo de esta HU directo del disco (no lo que quedó
-    guardado en analisis_tecnico.json en el último análisis) — así las
-    columnas que dependen de esto siempre reflejan el archivo actual, no
-    hace falta re-analizar la HU para que el Excel se entere de un cambio.
-    Lectura silenciosa (sin avisos en la UI): esto corre para cada fila de
-    un reporte en segundo plano, no tiene sentido un warning por archivo.
-    Devuelve el dict del AID, o None si no hay archivo o no se pudo leer."""
+    """Dict del AID activo leído del disco, o None si no hay o falla."""
     aid_path = r.get("aid_activo")
     if not aid_path:
         return None
@@ -110,16 +102,13 @@ def _leer_aid_activo(r: dict):
 
 
 def _s3_path_aid(r: dict) -> str:
-    """s3_path declarado en el AID de esta HU — "-" si no hay AID, no se
-    pudo leer, o no tiene el campo."""
     aid_data = _leer_aid_activo(r)
     val = aid_data.get("s3_path", "") if aid_data else ""
     return val if val else "-"
 
 
 def _nombre_subtipo_aid(r: dict) -> str:
-    """workflow_variables.tipoDocumento del AID de esta HU — "-" si no hay
-    AID, no se pudo leer, o no tiene el campo."""
+    """workflow_variables.tipoDocumento del AID."""
     aid_data = _leer_aid_activo(r)
     wf_vars = aid_data.get("workflow_variables") if aid_data else None
     val = wf_vars.get("tipoDocumento", "") if isinstance(wf_vars, dict) else ""
@@ -127,10 +116,7 @@ def _nombre_subtipo_aid(r: dict) -> str:
 
 
 def _leer_udz_activo(r: dict):
-    """Lee el UDZ activo de esta HU directo del disco (dict crudo, tal cual
-    quedó en el archivo — el desenvuelto de "item" lo hace
-    core.analysis.leer_campo_udz al leer cada campo, con su mismo fallback
-    a la raíz en todo el proyecto)."""
+    """Dict crudo del UDZ activo (leer_campo_udz maneja el desenvuelto de "item")."""
     udz_path = r.get("udz_activo")
     if not udz_path:
         return None
@@ -142,8 +128,6 @@ def _leer_udz_activo(r: dict):
 
 
 def _udz_necesita_transmision(r: dict) -> str:
-    """Sí/No según require_transmission del UDZ activo, leído del archivo
-    actual en disco — "-" si no hay UDZ o no se pudo determinar."""
     udz_data = _leer_udz_activo(r)
     val = str(leer_campo_udz(udz_data, "require_transmission") or "").strip().lower() if udz_data else ""
     if val == "true":
@@ -154,12 +138,9 @@ def _udz_necesita_transmision(r: dict) -> str:
 
 
 def generar_excel_consolidado(resultados: list, guardar_en_carpeta: Path = None, cargas_directas: list = None) -> bytes:
-    """Genera el Excel Consolidado: ID/título/tipo/sprint, el registro de
-    qué TA/AID se subió (nombre de archivo, S3 Path, subtipo), si el UDZ
-    necesita transmisión, y el despliegue real en PDN (resaltado en verde).
-    El estado de QA se muestra en la tabla de Streamlit (ui/backlog.py), no
-    en este Excel. Si se pasan `cargas_directas` (el log de "Carga directa"
-    sin HU), se agregan en una segunda hoja del mismo libro."""
+    """Excel Consolidado: ID/título/tipo/sprint, TA/AID/S3 Path/subtipo,
+    Transmisiones, y despliegue en PDN. QA se muestra en ui/backlog.py, no
+    acá. `cargas_directas` agrega una segunda hoja."""
     wb = Workbook()
     ws = wb.active
     ws.title = "Consolidado"

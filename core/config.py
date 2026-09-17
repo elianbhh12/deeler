@@ -141,10 +141,7 @@ else:
     AWS_CRED_FILE = str(BASE_DIR / "aws_credentials.json")
 AWS_AMBIENTES = ("qa", "pdn")
 
-#  Credenciales AWS separadas para la pestaña "Extracción / Inventario"
-#  (python_pipeline/) — apuntan a tablas DynamoDB distintas (config-control,
-#  text-analyzer, events-manager) que pueden requerir permisos distintos a
-#  los de subida de TA/AID/UDZ, así que no comparten archivo con AWS_CRED_FILE.
+#  Credenciales de "Extracción / Inventario" (python_pipeline/), separadas de AWS_CRED_FILE.
 PIPELINE_CRED_FILE = str(BASE_DIR / "pipeline_credentials.json")
 AWS_TABLAS = {
     "qa": {

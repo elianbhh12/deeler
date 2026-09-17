@@ -111,11 +111,7 @@ def cmd_validar_nuevos(args: argparse.Namespace) -> None:
 
 
 def cmd_run_all(args: argparse.Namespace) -> None:
-    """Delgado a proposito: toda la logica de los 6 pasos vive en
-    pipeline_service.ejecutar_pipeline_completo (compartida con cualquier UI
-    que integre este pipeline) -- aca solo se traduce args -> parametros,
-    se imprime en vivo via `log=print`, y se decide que hacer al final
-    (mostrar resumen, abrir los Excel) que es un detalle de terminal."""
+    """Wrapper delgado sobre pipeline_service.ejecutar_pipeline_completo."""
     modo_descarga = getattr(args, "modo_descarga", "incremental")
 
     def log(mensaje: str) -> None:

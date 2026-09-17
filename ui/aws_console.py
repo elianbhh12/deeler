@@ -145,10 +145,7 @@ def _validar_cruce_flujo(items: list) -> dict:
 
 
 def _requiere_transmision_desde_texto(texto: str) -> str:
-    """Sí/No según require_transmission del UDZ, para el registro de
-    auditoría — "-" si no se pudo determinar (JSON inválido o campo ausente).
-    Mismo criterio que core.analysis.leer_campo_udz (item primero, con
-    fallback a la raíz) en vez de una variante propia."""
+    """Sí/No según require_transmission del UDZ (mismo criterio que leer_campo_udz)."""
     try:
         data = json.loads(texto)
     except Exception:
