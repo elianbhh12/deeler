@@ -1,11 +1,20 @@
-# AID Flujos Dealer
+# Despliegues AID
 
-Dashboard interno (Streamlit) para validar, antes de subir a **PDN**, que los
-tres componentes de un caso de uso documental — **TA** (Text Analyzer,
-extracción), **AID** (configuración del flujo) y **UDZ** (eventos) — estén
-completos y coherentes entre sí. Trae las Historias de Usuario (HU) desde
-Azure DevOps, analiza los JSON adjuntos, y deja un registro (quién analizó,
-quién subió cada componente y a qué ambiente) antes del despliegue.
+Dashboard interno (Streamlit) con dos herramientas independientes, elegibles
+con un selector arriba del header:
+
+- **Despliegues AID** (la principal): valida, antes de subir a **PDN**, que
+  los tres componentes de un caso de uso documental — **TA** (Text Analyzer,
+  extracción), **AID** (configuración del flujo) y **UDZ** (eventos) — estén
+  completos y coherentes entre sí. Trae las Historias de Usuario (HU) desde
+  Azure DevOps, analiza los JSON adjuntos, y deja un registro (quién analizó,
+  quién subió cada componente y a qué ambiente) antes del despliegue.
+- **Extracción / Inventario**: descarga e inventaría lo que hay configurado
+  en DynamoDB (`config-control`, `text-analyzer`, `events-manager`) — ver
+  sección propia más abajo.
+
+Ambas comparten la misma app de Streamlit pero tienen credenciales, tablas y
+"core" propios — ver "Extracción / Inventario" para el detalle.
 
 ## Arranque rápido
 
@@ -62,20 +71,26 @@ BANCO/
 │   ├── guide.py                     # Texto de la guía contextual paso a paso
 │   └── utils.py                      # safe_name, obtener_usuario_actual, get_sprints, encontrar_hu_folder, abrir_carpeta/archivo
 ├── ui/                            # Interfaz Streamlit (un módulo por sección de pantalla)
-│   ├── __init__.py                  # run_app(): orquesta el orden exacto de renderizado
+│   ├── __init__.py                  # run_app(): selector entre "Despliegues AID" y "Extracción / Inventario"
 │   ├── styles.py                     # CSS del design system (inject_css)
 │   ├── header.py                      # Header + stepper del pipeline (1→2→3→4)
 │   ├── ingest.py                       # Paso 1 (traer HU) y Paso 2 (analizar sprint)
 │   ├── dashboard.py                     # Carga de resultados, KPIs y barra de progreso
 │   ├── backlog.py                        # Tarjeta del Excel consolidado + tabla resumen
 │   ├── hu_detail.py                       # Selector de HU + las 12 validaciones + estado de PDN (el módulo más grande)
-│   └── aws_console.py                      # Paso 3 del pipeline: consola "Subir a AWS" (ver más abajo)
+│   ├── aws_console.py                      # Paso 3 del pipeline: consola "Subir a AWS" (ver más abajo)
+│   └── inventario.py                        # Sección "Extracción / Inventario" (ver más abajo) — sobre python_pipeline/
+├── python_pipeline/         # Segunda herramienta, independiente de core/ y ui/: inventario de
+│   │                          # config-control/text-analyzer/events-manager desde DynamoDB (ver más abajo)
+│   ├── pipeline_service.py     # ejecutar_pipeline_completo() — misma lógica que usa ui/inventario.py y el CLI (cli.py)
+│   └── limpieza.py               # Borrado manual de descargas/ viejas (ver "Extracción / Inventario")
 ├── run.bat                # Arranca la app (doble clic)
 ├── run_tests.bat            # Corre los tests (doble clic)
 ├── requirements.txt          # Versiones fijas — ver "Dependencias"
 ├── .env                     # Credenciales/config real — NO se comparte (falta crearlo la primera vez)
 ├── .env.example               # Plantilla del .env, sin secretos
-├── aws_credentials.json         # JSON de credenciales AWS (gitignored) — ver "Subida a AWS"
+├── aws_credentials.json         # JSON de credenciales AWS de "Despliegues AID" (gitignored) — ver "Subida a AWS"
+├── pipeline_credentials.json      # JSON de credenciales AWS de "Extracción / Inventario" (gitignored) — aparte del anterior
 ├── img/
 │   ├── logo1.png               # Logo que se muestra en el header
 │   └── logo1.ico                # Mismo logo en .ico, para usar como ícono de acceso directo
@@ -83,7 +98,10 @@ BANCO/
 │   └── PROPUESTA_MULTIUSUARIO.md  # Arquitectura propuesta para llevar esto a varios dealers a la vez
 ├── tests/
 │   ├── conftest.py               # Fixtures — importan core.analysis directo (ver "Tests" más abajo)
-│   └── test_analisis.py          # Tests de las validaciones TA/AID/UDZ
+│   ├── test_analisis.py          # Tests de las validaciones TA/AID/UDZ
+│   ├── test_aws_upload.py        # Tests de subida a AWS (composite keys, verificación)
+│   ├── test_reports.py           # Tests del Excel Consolidado
+│   └── pipeline_inventario/      # Tests de python_pipeline/ (82+, sin necesitar AWS)
 └── Backlog_Dealer/              # Datos de trabajo: HU descargadas + análisis + Excel consolidado + cargas directas.
                                  # Se genera solo, no es código. Ruta configurable via ROOT_FOLDER en .env.
 ```
@@ -191,6 +209,50 @@ En las tres:
   (`cu_name` para TA, `use_case` para AID, `id` para UDZ son los candidatos
   naturales, ya usados en la validación de "coherencia" entre archivos).
 
+## Extracción / Inventario
+
+Segunda sección de la app (selector arriba del header, junto a "Despliegues
+AID") — una herramienta independiente, traída del proyecto hermano
+`flujosscript`, para inventariar lo que hay configurado en DynamoDB:
+
+- **Qué inventaría**: las tablas `config-control` (flujos R2/R3), `text-analyzer`
+  (use cases de IA) y `events-manager` (eventos UDZ crudos/resultados), en los
+  tres ambientes `qa`/`pdn`/`dev`.
+- **Cómo**: un solo botón corre los 6 pasos del pipeline (descarga → compara
+  R3 vs Text Analyzer → detecta subtipos repetidos → agrupa por subtipo →
+  actualiza el maestro/historial del ambiente → genera los Excel), con un
+  stepper visual mostrando en qué paso va la corrida en vivo + una consola
+  de log debajo, y al final ofrece abrir cada Excel resultante.
+- **Mantenimiento de disco**: panel para borrar `descargas/` (los JSON crudos
+  de cada corrida) más viejas que N días — manual a propósito, con vista
+  previa antes de confirmar. No toca `reportes/`/`historial/`, que es donde
+  vive lo que realmente importa a largo plazo (ver `python_pipeline/limpieza.py`).
+- **R2**: los flujos R2 (etapa distinta a R3, detectados por `s3_path` con
+  `r2-raw`/`s3-raw`) no pasan por la comparación con Text Analyzer, pero se
+  acumulan igual que los R3 — quedan en su propia hoja "R2" tanto en el
+  `reporte_completo.xlsx` de cada corrida como en el `maestro_<ambiente>.xlsx`
+  acumulado (antes solo vivían en el reporte de esa corrida puntual, se
+  "perdían" entre una corrida y la siguiente).
+- **Dónde vive el código**: `python_pipeline/` (paquete completo, sin tocar
+  su lógica interna) + `ui/inventario.py` (la pantalla). Es **independiente**
+  de `core/`/`ui/aws_console.py` — no comparte tablas, credenciales, ni
+  arriesga romper "Despliegues AID" si algo falla acá.
+- **Credenciales propias**: JSON separado en `pipeline_credentials.json`
+  (raíz del proyecto, gitignored) — configurable desde el panel de la propia
+  pantalla, mismo patrón que "Subida a AWS" pero sin mezclar permisos, porque
+  apunta a tablas distintas.
+- **Dónde quedan los datos**: `descargas/`, `reportes/`, `historial/`
+  (gitignored, se generan solos) y `referencias/` (configuración editable —
+  `pipeline_config.json`, ver `python_pipeline/config.py`).
+- **Quitado del flujo automático**: la comparación contra un catálogo externo
+  (`Orden_RE_Base.txt`, "Nuevos R3 vs Orden_RE_Base") se sacó del pipeline
+  completo — ese catálogo nunca se llegó a mantener, así que siempre mostraba
+  "No calculado". El módulo (`new_vs_baseline.py`) y el subcomando
+  `validar-nuevos` del CLI siguen ahí por si algún día se arma ese catálogo.
+- **CLI original**: sigue disponible corriendo `python -m python_pipeline.cli`
+  desde la raíz del proyecto, para quien prefiera el menú de terminal en vez
+  de la pantalla — usa exactamente la misma lógica (`pipeline_service.py`).
+
 ## Roadmap (no implementado todavía)
 
 - **Multiusuario**: hoy es una app de un solo usuario por instancia local.
@@ -217,6 +279,12 @@ o manualmente:
 ```
 .venv\Scripts\python -m pytest tests\ -v
 ```
+
+Incluye tanto los tests de "Despliegues AID" (`tests/test_analisis.py`,
+`tests/test_aws_upload.py`, `tests/test_reports.py`) como los de "Extracción
+/ Inventario" (`tests/pipeline_inventario/`, 82 tests del `python_pipeline/`
+original, sin necesitar AWS).
+
 TA → PDN · 15:23:15
 15:23:11›Componente: TA  ·  Ambiente: PDN  ·  Tabla destino: nu0600001-plataforma-ia-pdn-text-analyzer-table
 15:23:11›Archivo: ta_sitio_contenidos_invecocomercioinforme 3.json

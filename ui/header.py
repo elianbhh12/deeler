@@ -21,7 +21,7 @@ def render_header():
     <div class="app-header">
         <div style="display:flex;align-items:center;gap:14px">{_logo_img_tag}
             <div>
-                <div class="app-header-title">AID Flujos Dealer</div>
+                <div class="app-header-title">Despliegues AID</div>
                 <div class="app-header-subtitle">Validación técnica automatizada de componentes TA, AID y UDZ</div>
             </div>
         </div>

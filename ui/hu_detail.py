@@ -193,9 +193,37 @@ def _render_resumen_copiable(texto: str):
     """, height=_altura)
 
 
+def _leer_tipo_documento_y_proceso(r: dict) -> tuple:
+    """Tipo de documento y proceso declarados en workflow_variables del AID
+    activo, leídos del archivo actual en disco (no del análisis guardado) —
+    ("", "") si no hay AID, no se pudo leer, o no tiene esos campos."""
+    aid_path = r.get("aid_activo")
+    if not aid_path:
+        return "", ""
+    aid_data = cargar_json(Path(aid_path))
+    wf_vars = aid_data.get("workflow_variables") if isinstance(aid_data, dict) else None
+    if not isinstance(wf_vars, dict):
+        return "", ""
+    return wf_vars.get("tipoDocumento", "") or "", wf_vars.get("proceso", "") or ""
+
+
 def _render_seccion_rnf(r: dict, hu_folder):
     rnf_path_str = r.get("rnf_path")
     rnf_path = Path(rnf_path_str) if rnf_path_str else None
+
+    _tipo_doc, _proceso = _leer_tipo_documento_y_proceso(r)
+    if _tipo_doc or _proceso:
+        _partes = []
+        if _tipo_doc:
+            _partes.append(f"<b>Tipo de documento:</b> {html.escape(_tipo_doc)}")
+        if _proceso:
+            _partes.append(f"<b>Proceso:</b> {html.escape(_proceso)}")
+        st.markdown(f"""
+        <div style="font-size:12.5px;color:#57534E;background:#F5F5F4;border-radius:8px;
+                    padding:8px 12px;margin-bottom:10px">
+            {" &nbsp;·&nbsp; ".join(_partes)}
+        </div>
+        """, unsafe_allow_html=True)
 
     col_rnf1, col_rnf2 = st.columns([0.75, 0.25], vertical_alignment="center")
     with col_rnf1:

@@ -1,6 +1,7 @@
 # Secretos y config local
 .env
 aws_credentials.json
+pipeline_credentials.json
 
 # Entorno virtual
 .venv/
@@ -18,3 +19,11 @@ Backlog_Dealer/
 
 # Excel generado
 Consolidado_Backlog.xlsx
+
+# python_pipeline (Extracción/Inventario AID): datos y reportes generados,
+# no son código — mismo criterio que Backlog_Dealer/ arriba. referencias/ NO
+# se ignora: es configuración editable (pipeline_config.json, etc.), no dato
+# generado.
+descargas/
+reportes/
+historial/

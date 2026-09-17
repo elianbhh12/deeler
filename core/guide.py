@@ -119,7 +119,7 @@ Todas deben estar en {ICON_OK} para poder desplegar:
 | **Kafka topic** | TA publica en `documentreceivingmanagement.documentuploadedv1` |
 | **Coherencia** | `use_case` del AID == `cu_name` del TA |
 | **LAST_STEP** | Todos los pasos del AID tienen `LAST_STEP: "False"` |
-| **out_zone / copiar** | Si existe `out_zone` — necesita `copiarResultadoBucket: "True"` sin coexistir |
+| **out_zone / copiar** | `copiarResultadoBucket: "True"` siempre; `out_zone` no puede estar en el mismo step que `copiarResultadoBucket` (en otro step sí puede existir) |
 
 > Si alguna falla — corrígela antes de continuar. **No se puede desplegar con {ICON_ERROR}.**
 

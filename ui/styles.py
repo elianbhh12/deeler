@@ -5,33 +5,7 @@ from core.config import INK, WHITE, SURFACE, ACCENT, GREEN, PURPLE, ORANGE, RED
 
 
 def inject_scroll_restore():
-    """Streamlit vuelve la página al tope en cada rerun (ej. al elegir otro
-    TA/AID/UDZ en el selector, al aprobar, al subir a AWS) — se siente como
-    que "la página salta" o "se reinicia". Este script recuerda dónde estaba
-    mirando el usuario y lo restaura después de cada rerun.
-
-    No alcanza con guardar el scrollTop en píxeles a secas: si el contenido
-    de ARRIBA del punto donde mirabas cambia de alto entre un rerun y el
-    siguiente (ej. el log de la consola de AWS creció, o una HU se ocultó de
-    la lista de subida masiva porque ya se subió), el mismo píxel absoluto
-    termina apuntando a otra parte de la página — se siente como "un salto"
-    aunque el scroll técnicamente se haya "restaurado" bien. Por eso se
-    ancla a un ELEMENTO real de la página (el primero que estaba tocando el
-    borde superior visible) en vez de a un número de píxeles: se guarda una
-    "firma" de ese elemento (su data-testid + un pedazo de su texto + un
-    contador para el caso de firmas repetidas, ej. varios botones
-    "Actualizar") y, al volver, se busca ese mismo elemento y se deja
-    exactamente en el mismo lugar de la pantalla donde estaba, sin importar
-    cuánto haya crecido o encogido lo que quedó por encima. Si el elemento
-    ya no existe (contenido totalmente distinto), cae al píxel absoluto
-    como respaldo — mejor que nada.
-
-    Corre dentro de un iframe (así funciona st.iframe con HTML crudo), por
-    eso opera sobre window.parent — es la ventana real de la app, no el
-    iframe. Y el que hace scroll de verdad NO es la ventana (window.scrollY
-    se queda siempre en 0) sino el contenedor interno [data-testid="stMain"]
-    — así que se apunta directo a ese elemento, con window como respaldo por
-    si una versión futura de Streamlit cambia esa estructura."""
+ 
     st.iframe("""
     <script>
     (function() {
@@ -1174,6 +1148,120 @@ section[data-testid="stSidebar"] .stInfo {{
  font-size: 13px;
  font-weight: 700;
  color: var(--ink);
+}}
+
+/* =======================================================================
+ EXTRACCIÓN / INVENTARIO — panel de resultado de la corrida
+ ======================================================================= */
+
+.inv-panel {{
+ background: white;
+ border: 1px solid var(--line);
+ border-radius: 20px;
+ padding: 24px 28px;
+ box-shadow: var(--shadow-sm);
+ margin: 4px 0 18px 0;
+}}
+
+.inv-panel-header {{
+ display: flex;
+ align-items: center;
+ justify-content: space-between;
+ flex-wrap: wrap;
+ gap: 8px;
+ margin-bottom: 18px;
+ padding-bottom: 14px;
+ border-bottom: 1px solid var(--line);
+}}
+
+.inv-panel-title {{
+ font-size: 12px;
+ font-weight: 800;
+ color: var(--muted);
+ text-transform: uppercase;
+ letter-spacing: .05em;
+}}
+
+.inv-panel-meta {{
+ font-size: 12px;
+ color: var(--muted);
+}}
+
+.inv-hero {{
+ display: flex;
+ align-items: baseline;
+ gap: 14px;
+ margin-bottom: 22px;
+}}
+
+.inv-hero-value {{
+ font-size: 46px;
+ font-weight: 900;
+ color: var(--ink);
+ line-height: 1;
+}}
+
+.inv-hero-label {{
+ font-size: 13.5px;
+ color: var(--muted);
+ font-weight: 600;
+}}
+
+.inv-stats-grid {{
+ display: grid;
+ grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+ gap: 10px;
+ margin-bottom: 8px;
+}}
+
+.inv-stat {{
+ display: flex;
+ align-items: center;
+ gap: 12px;
+ background: var(--surface);
+ border: 1px solid var(--line);
+ border-radius: 14px;
+ padding: 12px 14px;
+}}
+
+.inv-stat-icon {{
+ flex-shrink: 0;
+ width: 34px;
+ height: 34px;
+ border-radius: 10px;
+ display: flex;
+ align-items: center;
+ justify-content: center;
+ font-size: 15px;
+ font-weight: 800;
+}}
+
+.inv-stat-icon.ok      {{ background: #D4F5E9; color: #156F48; }}
+.inv-stat-icon.warn    {{ background: #FFF1D6; color: #B45309; }}
+.inv-stat-icon.info    {{ background: #EDE7F6; color: #5B3E96; }}
+.inv-stat-icon.neutral {{ background: #EEECEA; color: var(--muted); }}
+
+.inv-stat-value {{
+ font-size: 19px;
+ font-weight: 800;
+ color: var(--ink);
+ line-height: 1.1;
+}}
+
+.inv-stat-label {{
+ font-size: 11px;
+ color: var(--muted);
+ font-weight: 600;
+ margin-top: 1px;
+}}
+
+.inv-files-title {{
+ font-size: 11.5px;
+ font-weight: 700;
+ color: var(--muted);
+ text-transform: uppercase;
+ letter-spacing: .04em;
+ margin: 22px 0 10px 0;
 }}
 
 </style>

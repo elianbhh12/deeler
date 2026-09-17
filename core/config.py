@@ -56,6 +56,7 @@ MI_APPROVE  = ":material/verified:"
 MI_GUIDE    = ":material/menu_book:"
 MI_CLOUD    = ":material/cloud_sync:"
 MI_SUMMARY  = ":material/summarize:"
+MI_CLEAN    = ":material/delete_sweep:"
 
 #  Estados de análisis (código lógico, separado del ícono de presentación)
 ESTADO_LISTO         = "LISTO"
@@ -139,6 +140,12 @@ if _aws_cred_file_env:
 else:
     AWS_CRED_FILE = str(BASE_DIR / "aws_credentials.json")
 AWS_AMBIENTES = ("qa", "pdn")
+
+#  Credenciales AWS separadas para la pestaña "Extracción / Inventario"
+#  (python_pipeline/) — apuntan a tablas DynamoDB distintas (config-control,
+#  text-analyzer, events-manager) que pueden requerir permisos distintos a
+#  los de subida de TA/AID/UDZ, así que no comparten archivo con AWS_CRED_FILE.
+PIPELINE_CRED_FILE = str(BASE_DIR / "pipeline_credentials.json")
 AWS_TABLAS = {
     "qa": {
         "aid": os.getenv("AWS_TABLA_AID_QA", "nu0087001-aid-r2-qa-dynamo-config-control"),

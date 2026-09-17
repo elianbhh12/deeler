@@ -179,6 +179,10 @@ def test_out_zone_presente_es_error_aunque_copiar_bucket_sea_true(appmod, tmp_pa
 
     assert r["validaciones"]["out_zone_copiar"]["copiar_ok"] is True
     assert r["validaciones"]["out_zone_copiar"]["out_zone_ok"] is False
+    assert len(r["validaciones"]["out_zone_copiar"]["conflictos"]) == 1, (
+        "el recorrido recursivo no debe procesar el mismo STEP_VARIABLES dos veces "
+        "(una como wrapper y otra al recursar dentro de si mismo) y duplicar el conflicto"
+    )
     assert r["estado_code"] == appmod.ESTADO_ERROR, (
         "out_zone no debe existir en el AID, aunque copiarResultadoBucket sea true"
     )

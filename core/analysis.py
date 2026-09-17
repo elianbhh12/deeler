@@ -736,8 +736,10 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
         def validar_step_vars(obj, path=""):
             if isinstance(obj, dict):
                 # Si este objeto es un STEP_VARIABLES, validamos
-                if "STEP_VARIABLES" in obj or ("copiarResultadoBucket" in obj and any(k in obj for k in ["out_zone", "use_case", "JOB_NAME"])):
-                    sv = obj if "STEP_VARIABLES" not in obj else obj["STEP_VARIABLES"]
+                es_wrapper = "STEP_VARIABLES" in obj
+                es_bare = (not es_wrapper) and ("copiarResultadoBucket" in obj and any(k in obj for k in ["out_zone", "use_case", "JOB_NAME"]))
+                if es_wrapper or es_bare:
+                    sv = obj["STEP_VARIABLES"] if es_wrapper else obj
                     copiar = sv.get("copiarResultadoBucket", "")
                     out_z = sv.get("out_zone", "")
 
@@ -753,8 +755,13 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
                     if copiar and out_z:
                         conflictos.append(f"copiarResultadoBucket={copiar} con out_zone={out_z} en el mismo step")
 
-                # Recursivo
+                # Recursivo — salvo el propio STEP_VARIABLES ya procesado
+                # arriba: recursar en él de nuevo lo vuelve a matchear por la
+                # rama "es_bare" (ese mismo dict tiene copiarResultadoBucket +
+                # out_zone directo), duplicando el conflicto.
                 for k, v in obj.items():
+                    if es_wrapper and k == "STEP_VARIABLES":
+                        continue
                     validar_step_vars(v, path + f".{k}")
             elif isinstance(obj, list):
                 for i, item in enumerate(obj):

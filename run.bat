@@ -1,5 +1,5 @@
 @echo off
-REM Lanza el dashboard "AID Flujos Dealer". Doble clic para arrancar.
+REM Lanza el dashboard "Despliegues AID". Doble clic para arrancar.
 setlocal
 cd /d "%~dp0"
 
