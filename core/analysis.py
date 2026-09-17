@@ -746,9 +746,12 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
                     if out_z:
                         out_zones.append(out_z)
 
-                    # Validar conflicto: si copiar=True pero existe out_zone
-                    if str(copiar).lower() == "true" and out_z:
-                        conflictos.append(f"copiarResultadoBucket=True con out_zone={out_z}")
+                    # out_zone solo es un problema si está en el MISMO
+                    # STEP_VARIABLES (mismo job/step de call_api) que
+                    # copiarResultadoBucket — en otro job/step, sin
+                    # copiarResultadoBucket, puede existir sin conflicto.
+                    if copiar and out_z:
+                        conflictos.append(f"copiarResultadoBucket={copiar} con out_zone={out_z} en el mismo step")
 
                 # Recursivo
                 for k, v in obj.items():
@@ -760,11 +763,12 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
         validar_step_vars(aid)
 
     # Regla: copiarResultadoBucket siempre debe ser true (cuando aplica), y
-    # out_zone NO debe existir en el AID (su sola presencia es error).
+    # out_zone no puede estar en el MISMO step (STEP_VARIABLES) que
+    # copiarResultadoBucket — en otro job/step distinto sí puede existir.
     if aid and tiene_call_api_con_step_vars:
         tiene_copiar    = len(copiar_vals) > 0
         copiar_es_true  = all(str(v).lower() == "true" for v in copiar_vals) if copiar_vals else False
-        out_zone_ok = len(out_zones) == 0
+        out_zone_ok = len(conflictos) == 0
         copiar_ok   = tiene_copiar and copiar_es_true
     else:
         # Sin AID, sin call_api+STEP_VARIABLES, o MODIFICACIÓN → N/A, no bloquear
@@ -775,11 +779,11 @@ def analizar_hu(hu_folder: Path, ta_override: Path = None, aid_override: Path = 
     if oz_na:
         _oz_detalle = f"{ICON_NA} No aplica (sin call_api+STEP_VARIABLES)"
     elif not out_zone_ok:
-        _oz_detalle = f"{ICON_ERROR} out_zone no debe existir en el AID: {out_zones}"
+        _oz_detalle = f"{ICON_ERROR} out_zone no puede estar en el mismo step que copiarResultadoBucket: {conflictos}"
     elif not copiar_ok:
         _oz_detalle = f"{ICON_ERROR} copiarResultadoBucket debe ser true"
     else:
-        _oz_detalle = f"{ICON_OK} copiarResultadoBucket=true, sin out_zone"
+        _oz_detalle = f"{ICON_OK} copiarResultadoBucket=true, sin out_zone en el mismo step"
     resultado["validaciones"]["out_zone_copiar"] = {
         "out_zones": out_zones,
         "copiar_vals": copiar_vals,

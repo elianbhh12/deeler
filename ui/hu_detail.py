@@ -887,23 +887,26 @@ def render_hu_detail(resultados, sprint_activo):
                      na=ls_na, campo="AID...LAST_STEP", valor_ok=(", ".join(ls_vals) if ls_vals else None))
 
             copiar_vals = oz_info.get("copiar_vals", [])
-            out_zones_vals = oz_info.get("out_zones", [])
+            oz_conflictos = oz_info.get("conflictos", [])
             _oz_present_ok = oz_info.get("out_zone_ok", False)
             def _oz_detail():
                 st.markdown("**copiarResultadoBucket encontrado en AID:**")
                 st.code(", ".join(copiar_vals) if copiar_vals else "(no encontrado)", language="text")
-                st.markdown("**Regla:** `copiarResultadoBucket` siempre debe ser `true`, y `out_zone` NO debe existir en el AID")
+                st.markdown(
+                    "**Regla:** `copiarResultadoBucket` siempre debe ser `true`, y `out_zone` no puede estar "
+                    "en el mismo step (STEP_VARIABLES) que `copiarResultadoBucket` — en otro job/step sí puede existir"
+                )
                 if not _oz_present_ok:
-                    st.error(f"{ICON_ERROR} **out_zone encontrado en AID (no debe existir): {', '.join(out_zones_vals)}**")
-                    st.info('**Quitar en AID** → dentro de STEP_VARIABLES, eliminar la clave `out_zone`')
+                    st.error(f"{ICON_ERROR} **out_zone en el mismo step que copiarResultadoBucket: {', '.join(oz_conflictos)}**")
+                    st.info('**Quitar en AID** → dentro de ese STEP_VARIABLES, eliminar la clave `out_zone` (o moverla a otro step sin copiarResultadoBucket)')
                 elif not copiar_vals:
                     st.error(f"{ICON_ERROR} **copiarResultadoBucket no encontrado**")
                     st.info('**Agregar en AID** → dentro de STEP_VARIABLES:\n```json\n"copiarResultadoBucket": "true"\n```')
                 else:
                     st.error(f"{ICON_ERROR} **copiarResultadoBucket no es true en {sum(1 for v in copiar_vals if str(v).lower() != 'true')} de {len(copiar_vals)} ocurrencia(s)**")
                     st.info('**Cambiar en AID** → `Ctrl+F: copiarResultadoBucket`\n```json\n"copiarResultadoBucket": "true"\n```')
-            val_card(oz_ok, "copiarResultadoBucket = true, sin out_zone", _f_aid,
-                     "copiarResultadoBucket siempre debe ser true, y out_zone no debe existir en el AID", _oz_detail, na=oz_na,
+            val_card(oz_ok, "copiarResultadoBucket = true, sin out_zone en el mismo step", _f_aid,
+                     "copiarResultadoBucket siempre debe ser true, y out_zone no puede estar en el mismo step que copiarResultadoBucket", _oz_detail, na=oz_na,
                      campo="AID...STEP_VARIABLES.copiarResultadoBucket / out_zone", valor_ok=(copiar_vals[0] if copiar_vals else None))
 
             #  Grupo UDZ

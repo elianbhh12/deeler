@@ -116,8 +116,9 @@ def test_out_zone_sin_copiar_bucket_bloquea_el_estado(appmod, tmp_path):
     'ok' que leía el agregador de criticos no existía en ese dict (solo existían
     out_zone_ok/copiar_ok), así que .get('ok', True) siempre devolvía True.
 
-    Este caso (falta copiarResultadoBucket, además de tener out_zone, que
-    tampoco debe existir) da error por las dos razones."""
+    Este caso da error por falta de copiarResultadoBucket — out_zone en ese
+    mismo step no cuenta como conflicto porque copiarResultadoBucket no está
+    presente ahí (el conflicto real es que estén los dos EN EL MISMO step)."""
     ta = {
         "cu_name": "caso_test", "type": "prompts",
         "kafka_output_topic": "documentreceivingmanagement.documentuploadedv1",
@@ -141,13 +142,16 @@ def test_out_zone_sin_copiar_bucket_bloquea_el_estado(appmod, tmp_path):
     r = appmod.analizar_hu(hu_folder)
 
     assert r["validaciones"]["out_zone_copiar"]["copiar_ok"] is False
+    assert r["validaciones"]["out_zone_copiar"]["out_zone_ok"] is True, (
+        "sin copiarResultadoBucket en el mismo step, out_zone ahí no es conflicto"
+    )
     assert r["estado_code"] == appmod.ESTADO_ERROR, (
         "falta de copiarResultadoBucket=True debe bloquear el estado LISTO"
     )
 
 
 def test_out_zone_presente_es_error_aunque_copiar_bucket_sea_true(appmod, tmp_path):
-    """out_zone no debe existir en el AID — su sola presencia es error, sin
+    """out_zone en el MISMO step que copiarResultadoBucket es error, sin
     importar que copiarResultadoBucket esté en true."""
     ta = {
         "cu_name": "caso_test2", "type": "prompts",
@@ -204,6 +208,44 @@ def test_sin_out_zone_y_con_copiar_bucket_true_queda_listo(appmod, tmp_path):
     r = appmod.analizar_hu(hu_folder)
 
     assert r["validaciones"]["out_zone_copiar"]["out_zone_ok"] is True
+    assert r["validaciones"]["out_zone_copiar"]["copiar_ok"] is True
+    assert r["estado_code"] == appmod.ESTADO_LISTO
+
+
+def test_out_zone_en_otro_step_sin_copiar_bucket_no_es_error(appmod, tmp_path):
+    """out_zone puede existir en un job/step DISTINTO al que tiene
+    copiarResultadoBucket — el conflicto real es que estén los dos EN EL
+    MISMO STEP_VARIABLES, no que out_zone exista en cualquier parte del AID."""
+    ta = {
+        "cu_name": "caso_test4", "type": "prompts",
+        "kafka_output_topic": "documentreceivingmanagement.documentuploadedv1",
+    }
+    aid = {
+        "workflow_name": "aid-pdn-test4", "s3_path": "s3://bucket-pdn-test4/resultados",
+        "use_case": "caso_test4", "TYPE": "topic",
+        "workflow_variables": {"tecnologia": "AID"},
+        "workflow_definition": [
+            {
+                "STEP_NAME": "step1", "FUNCTION_NAME": "call_api", "LAST_STEP": "False",
+                "STEP_VARIABLES": {"JOB_NAME": "job1", "copiarResultadoBucket": "true"},
+            },
+            {
+                "STEP_NAME": "step2", "FUNCTION_NAME": "otra_funcion", "LAST_STEP": "False",
+                "STEP_VARIABLES": {"JOB_NAME": "job2", "out_zone": "s3://bucket-pdn-test4/out/"},
+            },
+        ],
+    }
+    udz = {"item": {
+        "id": "aid-pdn-test4", "s3_path": "s3://bucket-pdn-test4/resultados",
+        "require_transmission": "true", "emit_event": "false",
+    }}
+    hu_folder = _escribir_hu_minima(tmp_path, ta, aid, udz, "DESPLIEGUE")
+
+    r = appmod.analizar_hu(hu_folder)
+
+    assert r["validaciones"]["out_zone_copiar"]["out_zone_ok"] is True, (
+        "out_zone en un step distinto al de copiarResultadoBucket no debe bloquear"
+    )
     assert r["validaciones"]["out_zone_copiar"]["copiar_ok"] is True
     assert r["estado_code"] == appmod.ESTADO_LISTO
 
